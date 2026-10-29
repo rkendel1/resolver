@@ -1,0 +1,37 @@
+{
+  "name": "@appport/resolver",
+  "version": "0.1.0",
+  "description": "The resolver: an AppPort host that stores typed, revisioned, steerable references on FeltDB, with AppPort Services API keys and secret custody.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "resolver": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@appport/authorization": "1.0.7",
+    "@appport/core": "1.4.0",
+    "@appport/protocol": "1.3.0",
+    "@appport/resolver-client": "0.1.0",
+    "@appport/resolver-core": "0.1.0",
+    "@appport/schema": "1.1.3",
+    "@appport/sdk": "1.4.0",
+    "@appport/server": "1.1.5",
+    "@appport/services": "0.9.1",
+    "@feltdb/core": "0.16.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rkendel1/resolver.git",
+    "directory": "packages/server"
+  }
+}

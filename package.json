@@ -1,0 +1,28 @@
+{
+  "name": "resolver-workspace",
+  "private": true,
+  "description": "Stable, typed references to anything that changes (models, providers, secrets, API keys, endpoints, agents, config), resolved at run time so applications change without a redeploy.",
+  "type": "module",
+  "workspaces": [
+    "packages/core",
+    "packages/server",
+    "packages/client"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -b tsconfig.build.json --pretty",
+    "test": "vitest run",
+    "clean": "tsc -b tsconfig.build.json --clean"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.6"
+  },
+  "overrides": {
+    "@feltdb/core": "0.16.1"
+  }
+}

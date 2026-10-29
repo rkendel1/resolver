@@ -1,0 +1,26 @@
+{
+  "name": "@appport/resolver-client",
+  "version": "0.1.0",
+  "description": "Resolve references at run time with live updates, caching, last-known-good fallback and traffic steering.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@appport/resolver-core": "0.1.0",
+    "@appport/sdk": "1.4.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rkendel1/resolver.git",
+    "directory": "packages/client"
+  }
+}

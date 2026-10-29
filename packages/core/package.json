@@ -1,0 +1,22 @@
+{
+  "name": "@appport/resolver-core",
+  "version": "0.1.0",
+  "description": "Reference names, kinds, bindings and traffic steering shared by the resolver and its clients. Pure: no I/O.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rkendel1/resolver.git",
+    "directory": "packages/core"
+  }
+}
