@@ -4,6 +4,26 @@
  *
  *   resolver init  [--dir .resolver] [--tenant default]      create keys and the first admin API key
  *   resolver serve [--dir .resolver] [--port 4300] [--host 127.0.0.1]
+ *   resolver backup <out-dir>                                state, then vault, with a manifest
+ *   resolver restore <backup-dir>                            into empty state and vault, then verify
+ *   resolver verify                                          state against vault (exit 1 on problems)
+ *   resolver vault rotate                                    re-seal every version under RESOLVER_VAULT_KEY
+ *
+ * These run against the state and vault directly (configuration below). Configuration, all optional
+ * except as noted:
+ *   RESOLVER_ENV=production|development      default production (outbound fails closed)
+ *   RESOLVER_FELTDB_URL, RESOLVER_FELTDB_TOKEN a FeltDB server (required for several hosts)
+ *   RESOLVER_STATE_SHARED=1                    local state opened by several processes on one host
+ *   RESOLVER_MULTI_INSTANCE=1                  several instances share the state (checked at startup)
+ *   RESOLVER_VAULT_DIR                         default <dir>/vault (shared by every instance)
+ *   RESOLVER_VAULT_KEY, RESOLVER_VAULT_PREVIOUS_KEYS (comma-separated)  default <dir>/vault.key
+ *   RESOLVER_VERIFIER_KEY                      default <dir>/verifier.key
+ *   RESOLVER_OUTBOUND_ORIGINS                  comma-separated origins agent discovery may contact
+ *   RESOLVER_OUTBOUND_PRIVATE_NETWORKS         comma-separated CIDRs allowed although not public
+ *   RESOLVER_OUTBOUND_ALLOW_HTTP=1
+ *   RESOLVER_SYNC_INTERVAL_MS                  default 1000
+ *   RESOLVER_INSTANCE_ID, RESOLVER_LOG_LEVEL=debug|info|warn|error|off   (JSON lines on stdout)
+ *   RESOLVER_VERIFY_ON_START=1                 integrity check at startup; not ready on problems
  *
  * Everything else talks to a running resolver (RESOLVER_URL, RESOLVER_API_KEY), so every change is
  * authorized, recorded and pushed to running consumers exactly like any other client's:
@@ -20,8 +40,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ResolverClient } from '@appport/resolver-client';
-import { createResolverRuntime } from './runtime.js';
-import { parseVaultKey } from './vault.js';
+import { createBackup, restoreBackup } from './backup.js';
+import { createLogger, silentLogger, type LogLevel } from './log.js';
+import { createResolverRuntime, type ResolverRuntimeOptions } from './runtime.js';
+import { createVault, parseVaultKey } from './vault.js';
 
 export interface CliIo {
   stdout: (line: string) => void;
@@ -32,7 +54,7 @@ export interface CliIo {
   untilStopped?: () => Promise<void>;
 }
 
-const USAGE = `usage: resolver <init|serve|get|set|history|rollback|revoke|list|watch|keys|grant|grants|ungrant> ...
+const USAGE = `usage: resolver <init|serve|backup|restore|verify|vault|get|set|history|rollback|revoke|list|watch|keys|grant|grants|ungrant> ...
 See the README for every option.`;
 
 function parse(argv: string[]): { positional: string[]; flags: Map<string, string[]> } {
@@ -61,15 +83,43 @@ function readKeyFile(file: string, generate: () => string): string {
   return readFileSync(file, 'utf8').trim();
 }
 
-async function localRuntime(flags: Map<string, string[]>, env: CliIo['env']) {
+const list = (value: string | undefined) => (value ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+
+/** Everything `serve`, `init`, `backup`, `restore`, `verify` and `vault` need, from flags and the environment. */
+function runtimeOptions(flags: Map<string, string[]>, env: CliIo['env'], log = false): ResolverRuntimeOptions {
   const dir = path.resolve(flags.get('dir')?.[0] ?? env['RESOLVER_DIR'] ?? '.resolver');
   const vaultKey = parseVaultKey(env['RESOLVER_VAULT_KEY'] ?? readKeyFile(path.join(dir, 'vault.key'), () => randomBytes(32).toString('hex')));
+  const previousVaultKeys = list(env['RESOLVER_VAULT_PREVIOUS_KEYS']).map(parseVaultKey);
   const verifierKey = env['RESOLVER_VERIFIER_KEY'] ?? readKeyFile(path.join(dir, 'verifier.key'), () => randomBytes(32).toString('hex'));
   const feltdbUrl = flags.get('feltdb-url')?.[0] ?? env['RESOLVER_FELTDB_URL'];
-  const state = feltdbUrl
+  const state: ResolverRuntimeOptions['state'] = feltdbUrl
     ? { remote: { url: feltdbUrl, ...(env['RESOLVER_FELTDB_TOKEN'] ? { token: env['RESOLVER_FELTDB_TOKEN'] } : {}) } }
-    : { local: dir };
-  return createResolverRuntime({ state, vaultKey, vaultDirectory: path.join(dir, 'vault'), verifierKey });
+    : { local: dir, ...(env['RESOLVER_STATE_SHARED'] === '1' ? { shared: true } : {}) };
+  const environment = (env['RESOLVER_ENV'] ?? 'production') as ResolverRuntimeOptions['environment'];
+  const level = env['RESOLVER_LOG_LEVEL'] ?? 'info';
+  const instanceId = env['RESOLVER_INSTANCE_ID'];
+  return {
+    state,
+    environment,
+    multiInstance: env['RESOLVER_MULTI_INSTANCE'] === '1',
+    vaultKey,
+    previousVaultKeys,
+    vaultDirectory: path.resolve(env['RESOLVER_VAULT_DIR'] ?? path.join(dir, 'vault')),
+    verifierKey,
+    outbound: {
+      allowedOrigins: list(env['RESOLVER_OUTBOUND_ORIGINS']),
+      allowPrivateNetworks: list(env['RESOLVER_OUTBOUND_PRIVATE_NETWORKS']),
+      ...(env['RESOLVER_OUTBOUND_ALLOW_HTTP'] === '1' ? { allowHttp: true } : {}),
+    },
+    ...(env['RESOLVER_SYNC_INTERVAL_MS'] ? { sync: { intervalMs: Number(env['RESOLVER_SYNC_INTERVAL_MS']) } } : {}),
+    ...(env['RESOLVER_VERIFY_ON_START'] === '1' ? { verifyIntegrityOnStart: true } : {}),
+    ...(instanceId ? { instanceId } : {}),
+    logger: log && level !== 'off' ? createLogger({ instance: instanceId ?? `resolver-${process.pid}`, level: level as LogLevel }) : silentLogger(),
+  };
+}
+
+function localRuntime(flags: Map<string, string[]>, env: CliIo['env'], log = false) {
+  return createResolverRuntime(runtimeOptions(flags, env, log));
 }
 
 function json(value: unknown, io: CliIo) {
@@ -105,12 +155,47 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
     }
 
     if (command === 'serve') {
-      const runtime = await localRuntime(flags, io.env);
+      const runtime = await localRuntime(flags, io.env, true);
       const server = await runtime.serve({ port: Number(flag('port') ?? io.env['PORT'] ?? 4300), host: flag('host') ?? '127.0.0.1' });
       io.stderr(`resolver listening on ${server.url}`);
       await (io.untilStopped?.() ?? new Promise<void>(() => undefined));
       await runtime.close();
       return 0;
+    }
+
+    if (command === 'backup' || command === 'restore' || command === 'verify' || command === 'vault') {
+      const options = runtimeOptions(flags, io.env);
+      const vault = createVault({ directory: options.vaultDirectory!, key: options.vaultKey!, previousKeys: options.previousVaultKeys ?? [] });
+      if (command === 'vault') {
+        if (rest[0] !== 'rotate') {
+          io.stderr('usage: resolver vault rotate');
+          return 2;
+        }
+        const report = await vault.rotate();
+        json({ currentKey: vault.keys.current, ...report }, io);
+        return 0;
+      }
+      const runtime = await createResolverRuntime({ ...options, custody: vault, management: false });
+      try {
+        if (command === 'backup') {
+          if (!rest[0]) throw new Error('usage: resolver backup <out-dir>');
+          const manifest = await createBackup({ db: runtime.db, vault, out: path.resolve(rest[0]) });
+          json({ out: path.resolve(rest[0]), sequence: manifest.sequence, rows: Object.fromEntries(Object.entries(manifest.collections).map(([k, v]) => [k, v.rows])), vaultFiles: Object.keys(manifest.vault.files).length, requiredVaultKeys: manifest.requiredVaultKeys }, io);
+          return 0;
+        }
+        if (command === 'restore') {
+          if (!rest[0]) throw new Error('usage: resolver restore <backup-dir>');
+          const { manifest, integrity } = await restoreBackup({ from: path.resolve(rest[0]), db: runtime.db, vault });
+          json({ restoredSequence: manifest.sequence, integrity }, io);
+          if (!integrity.ok) io.stderr('error: the restored state and vault do not agree; do not start the resolver until the problems are resolved');
+          return integrity.ok ? 0 : 1;
+        }
+        const integrity = await runtime.integrity();
+        json(integrity, io);
+        return integrity.ok ? 0 : 1;
+      } finally {
+        await runtime.close();
+      }
     }
 
     const url = flag('url') ?? io.env['RESOLVER_URL'];

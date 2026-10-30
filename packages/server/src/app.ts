@@ -16,6 +16,7 @@ import { createServer, type AppPortServer } from '@appport/server';
 import { serve, type RunningServer } from '@appport/server/node';
 import type { AppPortServices, VerifiedPrincipal } from '@appport/services';
 import { CAPABILITIES } from '@appport/resolver-core';
+import { silentLogger, type Logger } from './log.js';
 import { isLive } from './principals.js';
 import { Resolver, ResolverError } from './resolver.js';
 import { createUiContribution } from './ui/contribution.js';
@@ -73,8 +74,9 @@ export interface ResolverApplication {
   server: AppPortServer;
 }
 
-export function createResolverApplication(resolver: Resolver, services: AppPortServices, options: { ui?: boolean } = {}): ResolverApplication {
+export function createResolverApplication(resolver: Resolver, services: AppPortServices, options: { ui?: boolean; log?: Logger } = {}): ResolverApplication {
   const sessions = new Sessions();
+  const log = options.log ?? silentLogger();
   /**
    * A WebSocket connection authenticates once; the key may be revoked or expire while it stays open.
    * The key's record is re-read on every call and every streamed event, so revocation is immediate.
@@ -88,13 +90,28 @@ export function createResolverApplication(resolver: Resolver, services: AppPortS
     }
     return principal;
   };
+  /**
+   * One log line per call: operation, outcome code and reason, duration, the caller's tenant and key id,
+   * the reference name and resulting revision. Never the input, binding, secret or error message.
+   */
   const call =
-    <I, O>(fn: (principal: VerifiedPrincipal, input: I) => Promise<O>) =>
+    <I, O>(operation: string, fn: (principal: VerifiedPrincipal, input: I) => Promise<O>) =>
     async (input: I, context: { session?: { id: string } }) => {
-      const principal = await authenticated(context.session?.id);
+      const started = performance.now();
+      const requestId = `req_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
+      const ref = typeof (input as { ref?: unknown })?.ref === 'string' && ((input as { ref: string }).ref.length <= 512) ? (input as { ref: string }).ref : undefined;
+      let principal: VerifiedPrincipal | undefined;
       try {
-        return await fn(principal, input);
+        principal = await authenticated(context.session?.id);
+        const result = await fn(principal, input);
+        const revision = (result as { revision?: unknown })?.revision;
+        log.info('call', { requestId, operation, code: 'OK', durationMs: Math.round(performance.now() - started), tenant: principal.tenantId, principal: principal.principalId, ...(ref ? { ref } : {}), ...(typeof revision === 'number' ? { revision } : {}) });
+        return result;
       } catch (error) {
+        const code = error instanceof ResolverError ? error.code : AppPortError.is(error) ? (error as { code: string }).code : 'INTERNAL_ERROR';
+        const reason = error instanceof ResolverError ? error.reason : undefined;
+        (code === 'INTERNAL_ERROR' ? log.error : log.info)('call', { requestId, operation, code, ...(reason ? { reason } : {}), durationMs: Math.round(performance.now() - started), ...(principal ? { tenant: principal.tenantId, principal: principal.principalId } : {}), ...(ref ? { ref } : {}) });
+        if (!principal) throw error;
         toAppPortError(error);
       }
     };
@@ -103,18 +120,18 @@ export function createResolverApplication(resolver: Resolver, services: AppPortS
     defineCapability({ name, version: 1, description, effect, authorization: [PERMISSION], input, output: any, handler: handler as never } as never);
 
   const capabilities = [
-    capability(CAPABILITIES.resolve, 'observation', object({ ref: str, revision: int, key: str, reveal: { type: 'boolean' } }, ['ref']), call((p, i) => resolver.resolve(p, i as never)), 'Resolves a reference to its current (or pinned) binding.'),
-    capability(CAPABILITIES.put, 'consequential', object({ ref: str, kind: str, schema: {}, binding: {}, secret: str, expectedRevision: int, reason: str, ttlSeconds: int }, ['ref', 'expectedRevision']), call((p, i) => resolver.put(p, i as never)), 'Creates or updates a reference, conditional on its current revision.'),
-    capability(CAPABILITIES.history, 'observation', object({ ref: str, limit: int }, ['ref']), call((p, i) => resolver.history(p, i as never)), 'Every revision of a reference, with actor and reason.'),
-    capability(CAPABILITIES.rollback, 'consequential', object({ ref: str, toRevision: int, expectedRevision: int, reason: str }, ['ref', 'toRevision', 'expectedRevision']), call((p, i) => resolver.rollback(p, i as never)), 'Restores an earlier revision as a new revision.'),
-    capability(CAPABILITIES.revoke, 'consequential', object({ ref: str, expectedRevision: int, reason: str }, ['ref', 'expectedRevision']), call((p, i) => resolver.revoke(p, i as never)), 'Revokes a reference: every resolution fails from now on.'),
-    capability(CAPABILITIES.list, 'observation', object({ prefix: str }), call((p, i) => resolver.list(p, i as never)), 'References the caller may read.'),
-    capability(CAPABILITIES.grant, 'consequential', object({ subject: str, actions: { type: 'array', items: str }, pattern: str }, ['subject', 'actions', 'pattern']), call((p, i) => resolver.grant(p, i as never)), 'Grants actions on references to a principal.'),
-    capability(CAPABILITIES.ungrant, 'consequential', object({ id: str }, ['id']), call((p, i) => resolver.ungrant(p, i as never)), 'Removes a grant.'),
-    capability(CAPABILITIES.grants, 'observation', object(), call((p) => resolver.grants(p)), 'Grants in the caller\'s tenant.'),
-    capability(CAPABILITIES.createKey, 'consequential', object({ name: str, expiresAt: str }, ['name']), call((p, i) => resolver.createKey(p, i as never)), 'Issues an API key (the secret is returned once).'),
-    capability(CAPABILITIES.revokeKey, 'consequential', object({ id: str }, ['id']), call((p, i) => resolver.revokeKey(p, i as never)), 'Revokes an API key.'),
-    capability(CAPABILITIES.listKeys, 'observation', object(), call((p) => resolver.listKeys(p)), 'API keys in the caller\'s tenant.'),
+    capability(CAPABILITIES.resolve, 'observation', object({ ref: str, revision: int, key: str, reveal: { type: 'boolean' } }, ['ref']), call(CAPABILITIES.resolve, (p, i) => resolver.resolve(p, i as never)), 'Resolves a reference to its current (or pinned) binding.'),
+    capability(CAPABILITIES.put, 'consequential', object({ ref: str, kind: str, schema: {}, binding: {}, secret: str, expectedRevision: int, reason: str, ttlSeconds: int }, ['ref', 'expectedRevision']), call(CAPABILITIES.put, (p, i) => resolver.put(p, i as never)), 'Creates or updates a reference, conditional on its current revision.'),
+    capability(CAPABILITIES.history, 'observation', object({ ref: str, limit: int }, ['ref']), call(CAPABILITIES.history, (p, i) => resolver.history(p, i as never)), 'Every revision of a reference, with actor and reason.'),
+    capability(CAPABILITIES.rollback, 'consequential', object({ ref: str, toRevision: int, expectedRevision: int, reason: str }, ['ref', 'toRevision', 'expectedRevision']), call(CAPABILITIES.rollback, (p, i) => resolver.rollback(p, i as never)), 'Restores an earlier revision as a new revision.'),
+    capability(CAPABILITIES.revoke, 'consequential', object({ ref: str, expectedRevision: int, reason: str }, ['ref', 'expectedRevision']), call(CAPABILITIES.revoke, (p, i) => resolver.revoke(p, i as never)), 'Revokes a reference: every resolution fails from now on.'),
+    capability(CAPABILITIES.list, 'observation', object({ prefix: str }), call(CAPABILITIES.list, (p, i) => resolver.list(p, i as never)), 'References the caller may read.'),
+    capability(CAPABILITIES.grant, 'consequential', object({ subject: str, actions: { type: 'array', items: str }, pattern: str }, ['subject', 'actions', 'pattern']), call(CAPABILITIES.grant, (p, i) => resolver.grant(p, i as never)), 'Grants actions on references to a principal.'),
+    capability(CAPABILITIES.ungrant, 'consequential', object({ id: str }, ['id']), call(CAPABILITIES.ungrant, (p, i) => resolver.ungrant(p, i as never)), 'Removes a grant.'),
+    capability(CAPABILITIES.grants, 'observation', object(), call(CAPABILITIES.grants, (p) => resolver.grants(p)), 'Grants in the caller\'s tenant.'),
+    capability(CAPABILITIES.createKey, 'consequential', object({ name: str, expiresAt: str }, ['name']), call(CAPABILITIES.createKey, (p, i) => resolver.createKey(p, i as never)), 'Issues an API key (the secret is returned once).'),
+    capability(CAPABILITIES.revokeKey, 'consequential', object({ id: str }, ['id']), call(CAPABILITIES.revokeKey, (p, i) => resolver.revokeKey(p, i as never)), 'Revokes an API key.'),
+    capability(CAPABILITIES.listKeys, 'observation', object(), call(CAPABILITIES.listKeys, (p) => resolver.listKeys(p)), 'API keys in the caller\'s tenant.'),
     defineStreamCapability({
       name: CAPABILITIES.watch,
       version: 1,

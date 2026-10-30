@@ -1,9 +1,14 @@
-export { createResolverRuntime, type ResolverRuntime, type ResolverRuntimeOptions } from './runtime.js';
+export { createResolverRuntime, type ResolverRuntime, type ResolverRuntimeOptions, type ReadinessReport } from './runtime.js';
+export { RevisionSync, type SyncOptions, type SyncStatus } from './sync.js';
+export { createOutboundPolicy, classifyAddress, OutboundRefusedError, type OutboundOptions, type OutboundPolicy, type Environment } from './outbound.js';
+export { createLogger, silentLogger, type Logger, type LogFields } from './log.js';
+export { verifyIntegrity, type IntegrityReport, type IntegrityProblem, type IntegrityWarning } from './integrity.js';
+export { createBackup, checkBackup, restoreBackup, BackupError, BACKUP_COLLECTIONS, type BackupManifest } from './backup.js';
 export { Resolver, ResolverError, type ResolverOptions } from './resolver.js';
 export { createResolverApplication, serveResolver, APPLICATION_ID } from './app.js';
 export { GrantAuthorizer, OPERATOR_TYPE, isOperator } from './authorizer.js';
 export { ResolverStore, COLLECTIONS, referenceId } from './store.js';
-export { createVault, parseVaultKey, isVersionedCustody, VaultError, type VersionedCustody } from './vault.js';
+export { createVault, parseVaultKey, keyId, isVersionedCustody, VaultError, type VersionedCustody, type Vault, type VersionCheck, type RotationReport } from './vault.js';
 export { checkTargets, type TargetCheckOptions } from './targets.js';
 export { createManagementHandler, type ManagementOptions } from './ui/router.js';
 export { createUiContribution, PAGES as UI_PAGES } from './ui/contribution.js';
