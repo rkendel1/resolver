@@ -44,6 +44,8 @@ export interface AgentTarget {
 export interface SecretTarget {
   credentialRef: string;
   version: number;
+  /** The custody's id for this exact stored version, when it gives one: lets a restore be checked against its vault. */
+  seal?: string;
 }
 
 export type Target = Json | ModelTarget | EndpointTarget | AgentTarget | SecretTarget;

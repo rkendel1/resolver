@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -112,7 +113,9 @@ describe('secrets', () => {
     expect(JSON.stringify(await h.admin.history('ref://prod/llm/key'))).not.toContain(SECRET);
     expect(JSON.stringify(await h.admin.list())).not.toContain(SECRET);
     const vault = path.join(h.dir, 'vault');
-    for (const file of readdirSync(vault)) expect(readFileSync(path.join(vault, file), 'utf8')).not.toContain(SECRET);
+    const files = readdirSync(vault, { recursive: true, withFileTypes: true }).filter((e) => e.isFile());
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) expect(readFileSync(path.join(file.parentPath, file.name), 'utf8')).not.toContain(SECRET);
   });
 
   it('rotates by version; a pinned revision still reveals the version it pointed at', async () => {
@@ -128,6 +131,13 @@ describe('secrets', () => {
     const ref = { reference: { secretId: 'x', tenantId: 'acme' }, context: { tenantId: 'acme', principalId: 'p', purpose: 't' } };
     await other.store({ ...ref, value: 'sealed' });
     const wrong = createVault({ directory: path.join(h.dir, 'vault'), key: randomBytes(32) });
+    // The version names the key that sealed it, and this vault does not hold that key.
+    await expect(wrong.withSecret(ref, (s) => s.value)).rejects.toMatchObject({ code: 'KEY_MISSING' });
+    // A forged key id does not help: the ciphertext still does not open.
+    const entry = createHash('sha256').update('acme\u0000x').digest('hex');
+    const versionPath = path.join(h.dir, 'vault', entry, 'v1.json');
+    const sealed = JSON.parse(readFileSync(versionPath, 'utf8'));
+    writeFileSync(versionPath, JSON.stringify({ ...sealed, kid: wrong.keys.current }));
     await expect(wrong.withSecret(ref, (s) => s.value)).rejects.toMatchObject({ code: 'CORRUPT' });
     const crossTenant = { ...ref, context: { ...ref.context, tenantId: 'globex' } };
     await expect(other.withSecret(crossTenant, (s) => s.value)).rejects.toMatchObject({ code: 'MISSING' });
