@@ -14,6 +14,129 @@ indefinitely. Resolver is ready for a **single-instance** production deployment 
 origin allowlist. It is **not** ready for several instances behind a load balancer; section 3.3 gives the
 plan.
 
+## Update 2: multi-instance operation and hardening (starting from `e39fe19`)
+
+**Question: is Resolver now safe to deploy as several instances behind a load balancer?**
+
+**Yes, with these conditions:**
+- a FeltDB server for state;
+- the vault on a directory every instance mounts (or a custody that keeps versions);
+- the same keys on every instance;
+- `RESOLVER_MULTI_INSTANCE=1`;
+- the load balancer health-checking `/_resolver/ready`.
+
+The evidence is two-instance tests that pass, not documentation:
+
+1. **Real processes, real FeltDB server.**
+   - **What runs:** two `resolver serve` processes over one `feltdb-server` (the Rust server from
+     rkendel1/flow_db, built at `e505fc3`) and one vault directory.
+   - **Scenario:** your full acceptance scenario, steps 1–13.
+   - **Interruption:** step 12 freezes the FeltDB server with SIGSTOP, and B returns 503 and serves nothing
+     stale. Then FeltDB resumes and B catches up.
+   - **Restore:** into a fresh FeltDB server and vault, followed by an integrity check.
+   - **SSRF:** a check that internal destinations are unreachable through either instance.
+   - **Where:** `multi-process.test.ts`, "FeltDB server". **Manual integration:** run here with
+     `FELTDB_SERVER_BIN`. CI cannot fetch the private flow_db repository.
+2. **The same scenario in CI.** It runs on every push with local state opened shared by two processes
+   (`multi-process.test.ts`, "local state"). **Automated.**
+3. **Sync scenarios 1–9, fault injection and restarts.**
+   - 12 tests against two runtimes on one FeltDB handle; **automated**.
+   - 7 of those again against the real FeltDB server; **manual integration**.
+   - Including 48 concurrent writes through both instances, delivered to every watcher in per-reference
+     order, exactly once (`sync.test.ts`).
+4. **Flakiness check.** Every multi-instance test passed three repeated runs (100/100 each) with the
+   FeltDB server enabled. Full suite with the FeltDB server: 157/157. Browser suite: 11/11.
+
+**What remains true and must be accepted, or addressed, before relying on it:**
+- **Notification delay.** Instances learn of each other's changes by polling: watchers are notified
+  within one sync interval (measured p50 487 ms, max 994 ms at 1 s). Reads are never behind.
+- **KMS custody is not shipped or tested.** The supported shared custody is the vault on a shared POSIX
+  mount. That mount's own durability and locking semantics (NFS or EFS) are outside what was tested here;
+  the tests used one local filesystem.
+- **O2 is still open.** Superseded secret versions stay revealable through pins until the reference is
+  revoked.
+- **The verifier key must never be lost.** Losing it invalidates every API key; that recovery path is not
+  tested.
+- **Open items unchanged:** licence, publishing and the PR into `main` (P0.6).
+
+### What changed
+
+| Item | Status | Evidence |
+|---|---|---|
+| **O1 multi-instance**, P0 | **Done.** | [docs/multi-instance.md](multi-instance.md) |
+| ↳ Change sequence | A change sequence numbered inside the existing FeltDB transactions (no second source of truth). | `store.ts` |
+| ↳ Sync loop | A per-instance loop that never advances past unprocessed changes (`sync.ts`), with `db.revision()` as the change detector on the FeltDB server. | `sync.ts` |
+| ↳ Shared sessions | Management sessions in FeltDB. | `ui/router.ts` |
+| ↳ Removed grants | Grant removals numbered in the sequence; every instance ends the subject's watch streams. | `store.ts` |
+| ↳ Shared vault | A vault safe for several processes. | `vault.ts` |
+| ↳ Startup checks | Topology checks at startup. | `runtime.ts` |
+| ↳ Tests | Two-instance tests for every scenario. | test (CI); manual (FeltDB server) |
+| **O3 SSRF**, P0 | **Done.** [docs/outbound-ssrf.md](outbound-ssrf.md) | test: 49 cases, plus the cross-process case |
+| ↳ Policy | Explicit allowlist, with production failing closed. | `outbound.ts` |
+| ↳ Address checks | Every resolved address checked at connect time (rebinding-safe), every redirect hop checked, WebSocket disabled for verification. | `outbound.ts` |
+| ↳ Trust boundary | Rollbacks re-checked against today's policy. | test |
+| **Backup and recovery**, P0 (plan P0.5) | **Done.** [docs/backup-restore.md](backup-restore.md) | test: 8 cases, plus the cross-process restore |
+| ↳ Commands | `resolver backup`, `restore` and `verify`: state, then vault, with a manifest. | `backup.ts`, `cli.ts` |
+| ↳ Revision-to-version link | Seal ids link revisions to exact vault versions. | `vault.ts` |
+| ↳ Restore safety | Restore refuses incomplete, tampered or mismatched input and reports integrity problems. | test |
+| **O5 health, readiness, logs**, P1 | **Done.** | test |
+| ↳ Endpoints | `/_resolver/health`, plus `/_resolver/ready` with state, sync, custody, config and integrity checks. | `runtime.ts` |
+| ↳ Logs | JSON-line logs with request id, operation, code, reason, instance, revision and duration; nothing sensitive. | `log.ts` |
+| **O4 vault key rotation**, P1 | **Done.** [docs/vault-key-rotation.md](vault-key-rotation.md) | test: 5 cases |
+| ↳ Rotation | Key ids in sealed versions, previous keys accepted, `resolver vault rotate` (resumable, safe under traffic), format-1 migration. | `vault.ts` |
+| O9 grant changes reach clients | **Done:** removed grants end the subject's streams, and a broken stream invalidates the client cache. | test |
+| O2, O6, O7, O8, O10, O11 | Open, unchanged. O6's sign-in throttle is now per instance. | — |
+
+### New defects found and fixed in this work
+
+| ID | Severity | Defect | How found | Status |
+|---|---|---|---|---|
+| D9 | **Critical (pre-existing)** | **Resolver could not use a FeltDB server at all.** Revision ids had the form `<hash>.<n>`, and the FeltDB server accepts only `[A-Za-z0-9_-]` in ids, so every write failed with `VALIDATION_ERROR`. The README documented `RESOLVER_FELTDB_URL`, but it had never been run against a real server. | The first run of the sync tests against `feltdb-server` | Fixed: ids are now `<hash>-<n>`, and reads fall back to the old form for existing local state. **test** (FeltDB server) |
+| D10 | High (pre-existing) | **A client could hang indefinitely.** When the resolver's state store hung, `ResolverClient` never returned. `timeoutMs` bounded discovery's HTTP request, but not the WebSocket handshake after it. | Acceptance step 12 | Fixed: the client enforces its own deadline on connecting and on every call, and closes a late connection. **test** + **manual** |
+| D11 | High (introduced here, before commit) | **Out-of-order notifications.** An instance announced its own commits before earlier commits by other instances reached it, so a watcher could see revision 10 before revisions 2–9. | The concurrent two-instance test | Fixed: all notifications flow through the sequence; a commit triggers an immediate pass. **test** |
+| D12 | Medium (pre-existing; O9) | **Removed access did not reach clients.** A removed grant, or a live stream ended by key revocation, left clients serving cached values until the TTL. | Acceptance step 7 | Fixed. **test** + **manual** |
+
+### Ecosystem boundaries (reviewed, nothing new built)
+
+- **FeltKit: Resolver stays optional.** Resolver accepts any AppPort Services `SecretCustody` (`custody`
+  option), so a FeltKit host can supply its own custody instead of Resolver owning it. **code**
+  - FeltKit's credential custody is hard-wired today (`feltkit/packages/sdk/src/runtime/runtime.ts:153`,
+    `credentials.ts:460`, verified by inspection). An integration needs FeltKit to accept an injected
+    custody, as section 3.5 says; nothing in Resolver changes for that.
+  - Fail-closed production with declared references, and development without Resolver, remain FeltKit-side
+    work (section 3.5). Not built; nothing here blocks it.
+- **API-key management stays with AppPort Services.**
+  - Resolver uses AppPort Services' `ApiKeyService`; it does not reimplement keys.
+  - The Access page still creates, lists and revokes keys alongside grants (O11).
+  - **Recommendation, as a separate PR:** reduce the Access page to Resolver grants, and link key lifecycle
+    to the AppPort Services keys page. Not done here, to avoid unrelated product changes.
+- **Security headers for AppPort Services.**
+  - Resolver's pages send a hash-based CSP, `frame-ancestors 'none'`, `no-store`, `nosniff` and
+    `no-referrer`; AppPort Services' pages send no CSP (side-by-side review, code inspection).
+  - **Recommendation, as a separate PR in rkendel1/appport-services:** adopt the same `renderPage` header
+    set. Not done here.
+
+### Evidence summary
+
+```bash
+npm run build && npx tsc -p tsconfig.base.json --noEmit          # clean
+npm test                                                          # 16 files: 149 passed, 8 skipped (the FeltDB-server variants)
+FELTDB_SERVER_BIN=…/feltdb-server npm test                        # 157 passed (manual integration: the real server)
+npm run test:browser                                              # 11 passed
+```
+
+| Test file | Covers |
+|---|---|
+| `sync.test.ts` | multi-instance scenarios 1–9, fault injection, gaps, duplicates |
+| `multi-process.test.ts` | the acceptance scenario with real processes |
+| `outbound.test.ts` | SSRF |
+| `backup.test.ts` | recovery |
+| `rotation.test.ts` | key rotation |
+| `vault.test.ts` | the vault shared by several processes |
+| `ops.test.ts` | health, readiness, logs, shared sessions, client deadline, startup checks |
+
+The original review follows, unchanged except where marked.
+
 ---
 
 ## 1. Current-state assessment
@@ -59,15 +182,15 @@ passes after it, except D3, which was found by reading the code; its fix is desc
 
 | ID | Severity | Finding | Why it is not fixed here |
 |---|---|---|---|
-| O1 | **Blocks multi-instance** | Change notifications (`EventEmitter`), the vault's write queue and the D4 serialization are all in process. FeltDB local mode defaults to `access: 'exclusive'` (`owner.lock` with `O_EXCL`), so a second process on the same directory fails fast with `STATE_LOCKED` (read from `db.d.ts`/`db.js`; not run). That protects state, but a shared vault directory has no such guard. | Needs an architecture decision (3.3). |
+| O1 | **Blocks multi-instance** (**fixed in Update 2**) | Change notifications (`EventEmitter`), the vault's write queue and the D4 serialization are all in process. FeltDB local mode defaults to `access: 'exclusive'` (`owner.lock` with `O_EXCL`), so a second process on the same directory fails fast with `STATE_LOCKED` (read from `db.d.ts`/`db.js`; not run). That protects state, but a shared vault directory has no such guard. | Needs an architecture decision (3.3). |
 | O2 | Medium | Rotating a secret keeps the old version, and anyone with `reveal` can still read it through a pinned revision. A rotated leaked key stays readable until the whole reference is revoked. | Needs a contract decision: a `retire` operation, or not keeping superseded versions. See plan P1.2. |
-| O3 | Medium | **SSRF.** Writing an `agent` binding makes the resolver discover any origin the writer names (`targets.ts` `checkAgent`), including internal addresses. Only principals with `write` can trigger it. | Needs a configuration contract: `targets.agentOrigins` allowlist (P0.4). |
-| O4 | Medium | There is no vault key rotation. The vault file format carries no key id, and there is no re-seal tool. | P0.3. |
-| O5 | Medium | There are no health or readiness endpoints and no structured logs or metrics. The server logs nothing. | P0.1. |
+| O3 | Medium (**fixed in Update 2**) | **SSRF.** Writing an `agent` binding makes the resolver discover any origin the writer names (`targets.ts` `checkAgent`), including internal addresses. Only principals with `write` can trigger it. | Needs a configuration contract: `targets.agentOrigins` allowlist (P0.4). |
+| O4 | Medium (**fixed in Update 2**) | There is no vault key rotation. The vault file format carries no key id, and there is no re-seal tool. | P0.3. |
+| O5 | Medium (**fixed in Update 2**) | There are no health or readiness endpoints and no structured logs or metrics. The server logs nothing. | P0.1. |
 | O6 | Low | The sign-in throttle keys on the socket address, so behind a proxy everyone shares one bucket. There is no general rate limit on `/_resolver/*` (AppPort Services applies 120/min). The Origin check compares against the raw `Host`. The cookie is not `__Host-`. | Proxy trust needs a configuration contract (P1.5). |
 | O7 | Low | `/v1/ui` shows authenticated callers only the overview, because AppPort filters by the session's `permissions` (`resolver.call`), not by the capabilities each page declares. AppPort Services behaves the same way. | It is a platform-level contract; fix it in both places together (P1.6). |
 | O8 | Low | `watch` has no resume cursor. Recovery is "revalidate everything on reconnect", which is correct but costs O(cached references). | FeltDB's TS client has no resumable feed (3.3). |
-| O9 | Low | Grant changes emit no change events, so a removed grant reaches clients after at most the TTL. | Acceptable now that the TTL is enforced (D2). |
+| O9 | Low (**fixed in Update 2**) | Grant changes emit no change events, so a removed grant reaches clients after at most the TTL. | Acceptable now that the TTL is enforced (D2). |
 | O10 | Low | History and reveal records grow without bound, with no retention policy. History is append-only in use but not tamper-evident (already documented). | P1.4 and P2. |
 | O11 | Low | The Access page duplicates AppPort Services' API-key lifecycle: create, list and revoke the same keys. | P1.6. |
 

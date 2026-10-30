@@ -129,7 +129,9 @@ The `.resolver` directory holds `vault.key` and `verifier.key` (mode 0600). In p
 | Command | |
 |---|---|
 | `resolver init [--dir D] [--tenant T]` | create keys and the first admin API key |
-| `resolver serve [--dir D] [--port P] [--host H]` | run the resolver |
+| `resolver serve [--dir D] [--port P] [--host H]` | run the resolver (configuration: [Deployment](#deployment)) |
+| `resolver backup <dir>` / `restore <dir>` / `verify` | state and vault together; integrity check ([runbook](docs/backup-restore.md)) |
+| `resolver vault rotate` | re-seal every version under `RESOLVER_VAULT_KEY` ([procedure](docs/vault-key-rotation.md)) |
 | `resolver get <ref> [--key K] [--revision N] [--reveal]` | resolve (reveal: print a secret) |
 | `resolver set <ref> [--kind K] (--value JSON \| --binding JSON \| --secret-stdin) [--schema JSON] [--reason R] [--ttl S]` | create or change |
 | `resolver history <ref>` / `rollback <ref> <revision>` / `revoke <ref>` | revisions |
@@ -197,6 +199,45 @@ the AppPort API, so the UI can do exactly what the signed-in key may do.
 - **Composition.** The pages are published as an AppPort UI contribution at `/v1/ui`, so an AppPort shell can
   place them in its navigation; anonymous callers see only the overview.
 
+## Deployment
+
+| Topology | State | Custody | Configuration |
+|---|---|---|---|
+| One instance | local (`.resolver/state`) or a FeltDB server | the vault in `.resolver/vault` | defaults |
+| Several processes, one host | local, opened shared | the vault, one directory | `RESOLVER_STATE_SHARED=1 RESOLVER_MULTI_INSTANCE=1` |
+| Several hosts behind a load balancer | a FeltDB server | the vault on a shared mount (or a versioned KMS custody) | `RESOLVER_FELTDB_URL=… RESOLVER_VAULT_DIR=… RESOLVER_MULTI_INSTANCE=1` |
+
+Every instance gets the same keys from your secret manager: `RESOLVER_VAULT_KEY`,
+`RESOLVER_VAULT_PREVIOUS_KEYS` (during a key rotation) and `RESOLVER_VERIFIER_KEY`. Point the load
+balancer's health check at `GET /_resolver/ready` (200 or 503 with a JSON report: state, sync, custody,
+config, integrity). `GET /_resolver/health` is liveness only. No session affinity is needed: management
+sessions live in the shared state.
+
+| Variable | Default | |
+|---|---|---|
+| `RESOLVER_ENV` | `production` | `production` fails closed on outbound requests; `development` allows any origin, `http:` and private addresses |
+| `RESOLVER_OUTBOUND_ORIGINS` | none | origins agent discovery may contact (production: required for agent bindings) |
+| `RESOLVER_OUTBOUND_PRIVATE_NETWORKS` | none | CIDRs allowed although not public |
+| `RESOLVER_FELTDB_URL`, `RESOLVER_FELTDB_TOKEN` | local state | the FeltDB server |
+| `RESOLVER_STATE_SHARED` | off | local state opened by several processes on one host |
+| `RESOLVER_MULTI_INSTANCE` | off | refuse to start unless state and custody can be shared |
+| `RESOLVER_VAULT_DIR` | `<dir>/vault` | |
+| `RESOLVER_SYNC_INTERVAL_MS` | 1000 | how often an instance looks for changes made elsewhere |
+| `RESOLVER_LOG_LEVEL` | `info` | JSON lines on stdout; `off` to silence |
+| `RESOLVER_INSTANCE_ID` | host name and pid | |
+| `RESOLVER_VERIFY_ON_START` | off | check state against the vault at startup; not ready on problems |
+
+Operations, each with its tests and limits:
+
+- [docs/multi-instance.md](docs/multi-instance.md): architecture, synchronization, maximum staleness,
+  failure behaviour.
+- [docs/backup-restore.md](docs/backup-restore.md): `resolver backup`, `restore` and `verify`; the
+  recovery runbook.
+- [docs/vault-key-rotation.md](docs/vault-key-rotation.md): `resolver vault rotate`.
+- [docs/outbound-ssrf.md](docs/outbound-ssrf.md): the threat model and outbound configuration.
+- [docs/production-readiness-review.md](docs/production-readiness-review.md): findings, evidence and the
+  verdict.
+
 ## Built from
 
 | Responsibility | Package |
@@ -214,10 +255,9 @@ instance serves both, and the tests exercise the AppPort Services paths the reso
 
 ## Limits
 
-- **One resolver process per state.** Change notifications are fanned out in process, and the vault
-  serializes writes in process. With several instances a client connected to one instance learns of a
-  change made through another only when the reference's TTL passes. See
-  [docs/production-readiness-review.md](docs/production-readiness-review.md) for the multi-instance plan.
+- **Change notifications between instances poll.** An instance learns of another's changes within its
+  sync interval (1 s by default; measured p50 0.5 s). Every request reads the shared state directly, so
+  reads are never behind. See [docs/multi-instance.md](docs/multi-instance.md).
 - **Superseded secret versions are kept** (so pinned revisions still reveal). Rotating a leaked secret does
   not destroy the old material; only revoking the reference does.
 - **History is not tamper-evident.** Rows are written once, but nothing signs or chains them.
@@ -226,13 +266,19 @@ instance serves both, and the tests exercise the AppPort Services paths the reso
 - **Secrets reach the application.** An application with `reveal` holds the material in memory. For
   providers it never needs to see, keep the call inside a boundary that holds the credential.
 - **Grants are per API key.** There is no group or role layer yet.
-- **The vault is a local directory.** Back it up with the state; plug in KMS-backed custody for production.
+- **The vault is a directory.** Several instances share it on a mount with POSIX `link` and `rename`. Back
+  it up with the state (`resolver backup`). A KMS-backed custody plugs in through `custody`, but none is
+  shipped or tested here.
+- **The sign-in throttle is per instance.** 10 attempts per minute per address, on each instance.
 
 ## Development
 
 ```bash
 npm install
 npm run build
-npm test              # 49 tests: core, live updates, steering, security, agents, resilience, CLI, management API
+npm test              # everything below except the browser suite (after `npm run build`: the cross-process test runs the built CLI)
 npm run test:browser  # the management pages in Chromium: flows, CSP, axe in light and dark at 1280 and 640 px
+
+# With a FeltDB server binary (rkendel1/flow_db `feltdb-server`), the multi-instance tests also run against it:
+FELTDB_SERVER_BIN=/path/to/feltdb-server npm test
 ```
