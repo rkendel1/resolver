@@ -15,7 +15,9 @@
     "resolver": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "ui",
+    "vendor"
   ],
   "dependencies": {
     "@appport/authorization": "1.0.7",

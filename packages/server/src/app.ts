@@ -16,7 +16,9 @@ import { createServer, type AppPortServer } from '@appport/server';
 import { serve, type RunningServer } from '@appport/server/node';
 import type { AppPortServices, VerifiedPrincipal } from '@appport/services';
 import { CAPABILITIES } from '@appport/resolver-core';
+import { isLive } from './principals.js';
 import { Resolver, ResolverError } from './resolver.js';
+import { createUiContribution } from './ui/contribution.js';
 
 export const APPLICATION_ID = 'dev.appport.resolver';
 const PERMISSION = 'resolver.call';
@@ -71,18 +73,13 @@ export interface ResolverApplication {
   server: AppPortServer;
 }
 
-export function createResolverApplication(resolver: Resolver, services: AppPortServices): ResolverApplication {
+export function createResolverApplication(resolver: Resolver, services: AppPortServices, options: { ui?: boolean } = {}): ResolverApplication {
   const sessions = new Sessions();
   /**
    * A WebSocket connection authenticates once; the key may be revoked or expire while it stays open.
    * The key's record is re-read on every call and every streamed event, so revocation is immediate.
    */
-  const live = async (principal: VerifiedPrincipal): Promise<boolean> => {
-    if (principal.verifiedBy !== 'api_key') return true;
-    const key = await services.apiKeys.getApiKey(principal.tenantId, principal.principalId).catch(() => null);
-    if (!key || key.revokedAt || key.status === 'revoked') return false;
-    return !key.expiresAt || Date.parse(key.expiresAt) > Date.now();
-  };
+  const live = (principal: VerifiedPrincipal) => isLive(services, principal);
   const authenticated = async (sessionId: string | undefined): Promise<VerifiedPrincipal> => {
     const principal = sessions.get(sessionId);
     if (!(await live(principal))) {
@@ -143,6 +140,8 @@ export function createResolverApplication(resolver: Resolver, services: AppPortS
 
   const server = createServer({
     application,
+    // `GET /v1/ui`: the management pages as an AppPort/ui/1 contribution, filtered per caller by AppPort.
+    ...(options.ui === false ? {} : { ui: createUiContribution() }),
     authenticate: async ({ headers }) => {
       const header = headers?.['authorization'];
       if (!header?.startsWith('Bearer ')) return {};
@@ -192,8 +191,16 @@ async function* withHeartbeat<T>(source: AsyncGenerator<T>, signal: AbortSignal)
   }
 }
 
-export async function serveResolver(app: ResolverApplication, options: { port?: number; host?: string } = {}): Promise<RunningServer> {
-  const running = await serve({ server: app.server, port: options.port ?? 4300, host: options.host ?? '127.0.0.1' } as never);
+export async function serveResolver(
+  app: ResolverApplication,
+  options: { port?: number; host?: string; fallback?: (request: import('node:http').IncomingMessage, response: import('node:http').ServerResponse) => void } = {},
+): Promise<RunningServer> {
+  const running = await serve({
+    server: app.server,
+    port: options.port ?? 4300,
+    host: options.host ?? '127.0.0.1',
+    ...(options.fallback ? { fallback: options.fallback } : {}),
+  } as never);
   // Long-lived watch streams and WebSocket sessions would otherwise keep close() waiting forever.
   const sockets = new Set<import('node:net').Socket>();
   running.httpServer.on('connection', (socket) => {

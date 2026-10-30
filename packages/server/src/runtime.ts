@@ -13,6 +13,7 @@ import { Resolver } from './resolver.js';
 import { ResolverStore } from './store.js';
 import type { TargetCheckOptions } from './targets.js';
 import { createVault } from './vault.js';
+import { createManagementHandler, type ManagementOptions } from './ui/router.js';
 
 export interface ResolverRuntimeOptions {
   /**
@@ -28,6 +29,11 @@ export interface ResolverRuntimeOptions {
   /** Server-held API key verifier key (at least 32 bytes), mixed into new key verifiers. Never persisted. */
   verifierKey?: string;
   targets?: Omit<TargetCheckOptions, 'lookup'>;
+  /**
+   * The management UI and its JSON API, on the same server. Default on; `false` serves only the AppPort API.
+   * `authenticate` is the host's identity adapter (an SSO proxy, an embedding application).
+   */
+  management?: false | Omit<ManagementOptions, 'resolver' | 'services'>;
   now?: () => Date;
 }
 
@@ -78,7 +84,8 @@ export async function createResolverRuntime(options: ResolverRuntimeOptions): Pr
     ...(options.targets ? { targets: options.targets } : {}),
     ...(options.now ? { now: options.now } : {}),
   });
-  const app = createResolverApplication(resolver, services);
+  const app = createResolverApplication(resolver, services, { ui: options.management !== false });
+  const management = options.management === false ? undefined : createManagementHandler({ resolver, services, ...options.management });
   const running: Array<{ close(): Promise<void> }> = [];
   return {
     resolver,
@@ -92,7 +99,7 @@ export async function createResolverRuntime(options: ResolverRuntimeOptions): Pr
       return principal;
     },
     async serve(serveOptions) {
-      const server = await serveResolver(app, serveOptions);
+      const server = await serveResolver(app, { ...serveOptions, ...(management ? { fallback: management.handle } : {}) });
       running.push(server);
       return server;
     },

@@ -163,6 +163,36 @@ stack-agent work --appport "$(resolver get ref://prod/agents/claims-review | jq 
 The resolver refuses a binding whose served contract differs from the pin, and Stack-Agent re-checks the
 pin before every call (rkendel1/stack-agent#77).
 
+## Management UI
+
+`resolver serve` also serves management pages on the same port, built the way AppPort Services builds its
+own: the vendored Stack design system (`vendor/stack-ui`, checked against `SHA256SUMS`) and one HTML
+document per page.
+
+| Page | Route | |
+|---|---|---|
+| Overview | `/resolver` | counts by kind, recently changed references |
+| References | `/references` | browse by prefix and kind; a reference's binding, targets, history, rollback, revoke |
+| Models | `/models` | model aliases: retarget, start a canary at N%, promote it |
+| Secrets | `/secrets` | metadata and reveal log; set a new value, revoke. Material never reaches the page |
+| Access | `/access` | API keys (shown once on creation) and grants |
+
+Every page and the JSON API behind it (`/_resolver/*`) go through the same resolver methods and grants as
+the AppPort API, so the UI can do exactly what the signed-in key may do.
+
+- **Sign-in.** An operator signs in with an API key at `/resolver/sign-in` and gets an HttpOnly,
+  SameSite=Strict session cookie (8 hours, 30 minutes idle). The page's script never sees the key or the
+  session and keeps nothing in browser storage. Sign-in is limited to 10 attempts a minute per address. A
+  revoked or expired key ends its sessions on the next request.
+- **CSRF.** A cookie-authenticated change must carry a same-origin `Origin` and a JSON body.
+- **CSP.** Each page admits only its own inline script and style (by hash), requests to its own origin, and
+  no framing. Responses are `no-store`.
+- **Host identity.** Embedding applications or an SSO proxy pass `management: { authenticate(request) }`
+  (returning AppPort Services principal claims); `signIn: false` turns off API-key sign-in.
+  `management: false` serves the AppPort API only.
+- **Composition.** The pages are published as an AppPort UI contribution at `/v1/ui`, so an AppPort shell can
+  place them in its navigation; anonymous callers see only the overview.
+
 ## Built from
 
 | Responsibility | Package |
@@ -172,7 +202,8 @@ pin before every call (rkendel1/stack-agent#77).
 | API keys, verified principals, the AuthBoundry decision contract, secret custody contract, model catalog | `@appport/services` |
 | References, revisions, grants, reveals, keys: durable state and atomic conditional writes | `@feltdb/core` (local file, memory, or a FeltDB server) |
 | References, kinds, bindings, steering (shared by server and client) | `@appport/resolver-core` (this repository) |
-| The vault, the grant policy, the resolver service, the CLI | `@appport/resolver` (this repository) |
+| Management pages | Stack design system (`@stack/ui` 0.3.0, vendored as AppPort Services does) |
+| The vault, the grant policy, the resolver service, the CLI, the management UI | `@appport/resolver` (this repository) |
 
 `@appport/services` 0.9.1 pins `@feltdb/core` 0.15.0; this workspace overrides it to 0.16.1 so one FeltDB
 instance serves both, and the tests exercise the AppPort Services paths the resolver uses on it.
@@ -194,5 +225,6 @@ instance serves both, and the tests exercise the AppPort Services paths the reso
 ```bash
 npm install
 npm run build
-npm test        # 38 tests: core, live updates, steering, security, agents, resilience, CLI
+npm test              # 49 tests: core, live updates, steering, security, agents, resilience, CLI, management API
+npm run test:browser  # the management pages in Chromium: flows, CSP, axe in light and dark at 1280 and 640 px
 ```
