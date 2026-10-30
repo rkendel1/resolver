@@ -21,7 +21,7 @@ import { INTELLIGENCE_CATALOG } from '@appport/services';
 import { REASONS } from '@appport/resolver-core';
 import { isOperator } from '../authorizer.js';
 import { isLive } from '../principals.js';
-import { ResolverError, type Resolver } from '../resolver.js';
+import { checkGrant, ResolverError, type Resolver } from '../resolver.js';
 import { PAGES } from './contribution.js';
 import { renderPage, SIGN_IN } from './pages.js';
 
@@ -144,9 +144,16 @@ export function createManagementHandler(options: ManagementOptions) {
     if (parsed.host !== host) throw new HttpError(403, 'FORBIDDEN', 'cross-origin request refused');
   }
 
+  /** Drops expired sessions and stale sign-in counters, so neither map grows without bound. */
+  function sweep(now: number) {
+    for (const [key, session] of sessions) if (now - session.created > ttl || now - session.lastUsed > idle) sessions.delete(key);
+    for (const [ip, entry] of attempts) if (now - entry.since > SIGN_IN_WINDOW_MS) attempts.delete(ip);
+  }
+
   function throttle(request: IncomingMessage) {
     const ip = request.socket.remoteAddress ?? 'unknown';
     const now = Date.now();
+    sweep(now);
     const entry = attempts.get(ip);
     if (!entry || now - entry.since > SIGN_IN_WINDOW_MS) {
       attempts.set(ip, { count: 1, since: now });
@@ -194,7 +201,7 @@ export function createManagementHandler(options: ManagementOptions) {
       if (method === 'DELETE') {
         const token = cookieToken(request);
         if (token) sessions.delete(tokenKey(token));
-        return send(response, 204, undefined, { 'set-cookie': `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
+        return send(response, 204, undefined, { 'set-cookie': `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure(request) ? '; Secure' : ''}` });
       }
       const key = p.verifiedBy === 'api_key' ? await services.apiKeys.getApiKey(p.tenantId, p.principalId).catch(() => null) : null;
       return send(response, 200, {
@@ -256,8 +263,13 @@ export function createManagementHandler(options: ManagementOptions) {
         case '/_resolver/revoke':
           return send(response, 200, await resolver.revoke(p, input as never));
         case '/_resolver/keys': {
+          // Every grant is checked before the key exists: a refused grant must not leave a key whose secret
+          // was never shown.
+          const grants = input['grants'] ?? [];
+          if (!Array.isArray(grants)) throw new HttpError(400, 'INVALID_INPUT', 'grants must be a list');
+          for (const grant of grants as Array<{ actions: unknown; pattern: unknown }>) checkGrant(grant ?? {});
           const created = await resolver.createKey(p, { name: String(input['name'] ?? '') });
-          for (const grant of (input['grants'] as Array<{ actions: string[]; pattern: string }> | undefined) ?? []) {
+          for (const grant of grants as Array<{ actions: string[]; pattern: string }>) {
             await resolver.grant(p, { subject: created.principal, actions: grant.actions, pattern: grant.pattern });
           }
           return send(response, 200, created);
@@ -287,7 +299,7 @@ export function createManagementHandler(options: ManagementOptions) {
     } catch (error) {
       if (error instanceof HttpError) return send(response, error.status, { error: { code: error.code, message: error.message, ...(error.reason ? { reason: error.reason } : {}) } });
       if (error instanceof ResolverError) {
-        return send(response, STATUS[error.code] ?? 500, { error: { code: error.code, message: error.message, reason: error.reason, ...error.details } });
+        return send(response, STATUS[error.code] ?? 500, { error: { ...error.details, code: error.code, message: error.message, reason: error.reason } });
       }
       const code = (error as { code?: string }).code;
       if (code === 'DENIED') return send(response, 403, { error: { code: 'FORBIDDEN', message: 'not allowed' } });

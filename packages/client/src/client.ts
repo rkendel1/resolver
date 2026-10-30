@@ -2,7 +2,11 @@
  * The resolver client: an application resolves references at run time instead of reading values from
  * its deployment. Change a reference and every running consumer picks it up; nothing is redeployed.
  *
- * - Results are cached until a change notification arrives (live) or the reference's TTL passes.
+ * - Results are cached until a change notification arrives (live) or the reference's TTL passes, whichever
+ *   is first. A live connection never extends a result past its TTL: a notification can be missed (another
+ *   resolver instance, a reconnect), and the TTL bounds how long that goes unnoticed.
+ * - Pinned resolutions (`revision`) are cached the same way: the binding of a revision never changes, but
+ *   revocation and grants do, and they are rechecked.
  * - Weighted bindings are steered locally from the cached targets: the same key always gets the same
  *   target, with no request per call.
  * - If the resolver is unreachable, the last known good result is served for at most `maxStaleSeconds`.
@@ -76,9 +80,10 @@ export interface ResolvedModel extends ModelTarget {
   ref: string;
   revision: number;
   label?: string;
+  /** The revision of the credential reference whose material is in `apiKey`: with `ref` and `revision`, a receipt of what was used. */
+  credentialRevision?: number;
 }
 
-const LIVE_SILENCE_MS = 45_000;
 const AUTHORITATIVE = new Set(['NOT_FOUND', 'FORBIDDEN', 'UNAUTHORIZED', 'INVALID_INPUT', 'CONFLICT']);
 
 function toError(error: unknown): ResolverClientError {
@@ -95,12 +100,16 @@ export class ResolverClient {
   readonly #cache = new Map<string, Cached>();
   readonly #secrets = new Map<string, CachedSecret>();
   readonly #inflight = new Map<string, Promise<ResolveResult>>();
+  /**
+   * Bumped by every change notification for a reference (and, for all references, by every reconnect).
+   * A fetch that was in flight across a bump may carry the old binding, so its result is cached as invalid.
+   */
+  readonly #generations = new Map<string, number>();
+  #epoch = 0;
   readonly #listeners = new Map<string, Set<(event: ChangeEvent) => void>>();
   #watching = false;
   #closed = false;
   #stream: { cancel(reason?: string): void } | undefined;
-  /** When the live stream last delivered anything (a change or a heartbeat). */
-  #lastBeat = 0;
 
   constructor(options: ResolverClientOptions) {
     this.#options = { live: true, maxStaleSeconds: 300, timeoutMs: 5000, ...options };
@@ -118,15 +127,7 @@ export class ResolverClient {
 
   /** The full resolution: binding, revision, and the target selected for `key`. */
   async resolve(ref: string, options: { key?: string; revision?: number } = {}): Promise<ResolveResult> {
-    if (options.revision !== undefined) {
-      // A pin never changes: cache it without expiry.
-      const pinnedKey = `${ref}#${options.revision}`;
-      const hit = this.#cache.get(pinnedKey);
-      const result = hit?.result ?? (await this.#fetch(ref, { revision: options.revision }));
-      if (!hit) this.#cache.set(pinnedKey, { result, fetchedAt: Date.now(), invalid: false });
-      return this.#steer(result, options.key);
-    }
-    return this.#steer(await this.#current(ref), options.key);
+    return this.#steer(await this.#current(ref, options.revision), options.key);
   }
 
   /** The selected target's value. */
@@ -136,13 +137,18 @@ export class ResolverClient {
 
   /** Secret material for a `secret` reference. Needs a `reveal` grant. Held in memory for the TTL only. */
   async secret(ref: string): Promise<string> {
+    return (await this.#secretWithRevision(ref)).value;
+  }
+
+  async #secretWithRevision(ref: string): Promise<CachedSecret> {
     const current = await this.#current(ref);
     const cached = this.#secrets.get(ref);
-    if (cached && cached.revision === current.revision && Date.now() - cached.fetchedAt < current.ttlSeconds * 1000) return cached.value;
+    if (cached && cached.revision === current.revision && Date.now() - cached.fetchedAt < current.ttlSeconds * 1000) return cached;
     const revealed = await this.#call<ResolveResult>(CAPABILITIES.resolve, { ref, reveal: true });
     if (revealed.secret === undefined) throw new ResolverClientError('INTERNAL_ERROR', undefined, `${ref} returned no material`);
-    this.#secrets.set(ref, { value: revealed.secret, revision: revealed.revision, fetchedAt: Date.now() });
-    return revealed.secret;
+    const entry = { value: revealed.secret, revision: revealed.revision, fetchedAt: Date.now() };
+    this.#secrets.set(ref, entry);
+    return entry;
   }
 
   /**
@@ -242,19 +248,18 @@ export class ResolverClient {
 
   // ---- internals --------------------------------------------------------------------------------
 
-  async #current(ref: string): Promise<ResolveResult> {
-    const hit = this.#cache.get(ref);
+  async #current(ref: string, revision?: number): Promise<ResolveResult> {
+    const key = cacheKey(ref, revision);
+    const hit = this.#cache.get(key);
     const age = hit ? Date.now() - hit.fetchedAt : Infinity;
-    // The resolver sends a heartbeat every 15 s: a quiet stream is not trusted to mean "no changes".
-    const live = this.#stream !== undefined && Date.now() - this.#lastBeat < LIVE_SILENCE_MS;
-    if (hit && !hit.invalid && (live || age < hit.result.ttlSeconds * 1000)) return hit.result;
+    if (hit && !hit.invalid && age < hit.result.ttlSeconds * 1000) return hit.result;
     try {
-      return await this.#fetchShared(ref);
+      return await this.#fetchShared(ref, revision);
     } catch (error) {
       const failure = toError(error);
       if (AUTHORITATIVE.has(failure.code)) {
-        this.#cache.delete(ref);
-        this.#secrets.delete(ref);
+        this.#cache.delete(key);
+        if (revision === undefined) this.#secrets.delete(ref);
         throw failure;
       }
       if (hit && age < (hit.result.ttlSeconds + this.#options.maxStaleSeconds) * 1000) {
@@ -265,17 +270,28 @@ export class ResolverClient {
     }
   }
 
-  #fetchShared(ref: string): Promise<ResolveResult> {
-    const running = this.#inflight.get(ref);
+  #fetchShared(ref: string, revision?: number): Promise<ResolveResult> {
+    const key = cacheKey(ref, revision);
+    const running = this.#inflight.get(key);
     if (running) return running;
-    const request = this.#fetch(ref, {})
+    const generation = this.#generation(ref);
+    const request = this.#fetch(ref, revision !== undefined ? { revision } : {})
       .then((result) => {
-        this.#cache.set(ref, { result, fetchedAt: Date.now(), invalid: false });
+        this.#cache.set(key, { result, fetchedAt: Date.now(), invalid: this.#generation(ref) !== generation });
         return result;
       })
-      .finally(() => this.#inflight.delete(ref));
-    this.#inflight.set(ref, request);
+      .finally(() => this.#inflight.delete(key));
+    this.#inflight.set(key, request);
     return request;
+  }
+
+  #generation(ref: string): string {
+    return `${this.#epoch}.${this.#generations.get(ref) ?? 0}`;
+  }
+
+  #invalidateAll() {
+    this.#epoch += 1;
+    for (const entry of this.#cache.values()) entry.invalid = true;
   }
 
   #fetch(ref: string, extra: { revision?: number }): Promise<ResolveResult> {
@@ -290,7 +306,11 @@ export class ResolverClient {
 
   async #withCredential(result: ResolveResult, target: ModelTarget, label?: string): Promise<ResolvedModel> {
     const model: ResolvedModel = { ...target, ref: result.ref, revision: result.revision, ...(label ? { label } : {}) };
-    if (target.credential) model.apiKey = await this.secret(target.credential);
+    if (target.credential) {
+      const credential = await this.#secretWithRevision(target.credential);
+      model.apiKey = credential.value;
+      model.credentialRevision = credential.revision;
+    }
     return model;
   }
 
@@ -336,13 +356,17 @@ export class ResolverClient {
         const client = await this.#connection();
         const stream = client.stream<ChangeEvent | { heartbeat: string }>(CAPABILITIES.watch, { prefix: 'ref://' });
         this.#stream = stream;
-        this.#lastBeat = Date.now();
-        // Anything cached before (re)connecting may have missed a change: revalidate it.
-        for (const entry of this.#cache.values()) entry.invalid = true;
-        if (delay > 500) this.#options.onWarning?.({ kind: 'reconnected' });
-        delay = 500;
+        // Anything cached before (re)connecting may have missed a change: revalidate it. Again on the first
+        // chunk, which the resolver sends once it is subscribed: a change between the two is not lost.
+        this.#invalidateAll();
+        let subscribed = false;
         for await (const chunk of stream) {
-          this.#lastBeat = Date.now();
+          if (!subscribed) {
+            subscribed = true;
+            this.#invalidateAll();
+            if (delay > 500) this.#options.onWarning?.({ kind: 'reconnected' });
+            delay = 500;
+          }
           if ('heartbeat' in chunk) continue;
           this.#apply(chunk);
         }
@@ -358,12 +382,20 @@ export class ResolverClient {
   }
 
   #apply(event: ChangeEvent) {
-    const entry = this.#cache.get(event.ref);
-    if (entry) entry.invalid = true;
-    if (event.state === 'revoked') this.#cache.delete(event.ref);
+    this.#generations.set(event.ref, (this.#generations.get(event.ref) ?? 0) + 1);
+    for (const [key, entry] of this.#cache) {
+      if (key !== event.ref && !key.startsWith(`${event.ref}#`)) continue;
+      // Revocation also ends every pinned resolution of the name.
+      if (event.state === 'revoked') this.#cache.delete(key);
+      else entry.invalid = true;
+    }
     this.#secrets.delete(event.ref);
     for (const [key, listeners] of this.#listeners) {
       if (key === event.ref || (key.endsWith('/') && event.ref.startsWith(key))) for (const listener of listeners) listener(event);
     }
   }
+}
+
+function cacheKey(ref: string, revision?: number): string {
+  return revision === undefined ? ref : `${ref}#${revision}`;
 }

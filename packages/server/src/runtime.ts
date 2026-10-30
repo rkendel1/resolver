@@ -4,6 +4,7 @@
  * (secret material, outside FeltDB) and the grant authorizer.
  */
 
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createFeltDB, type StateFirstDB } from '@feltdb/core';
 import { createServices, type AppPortServices, type SecretCustody, type VerifiedPrincipal } from '@appport/services';
@@ -51,7 +52,9 @@ export interface ResolverRuntime {
 
 function openState(state: ResolverRuntimeOptions['state']): { db: StateFirstDB; owned: boolean } {
   if ('db' in state) return { db: state.db, owned: false };
-  if ('memory' in state) return { db: createFeltDB({ namespace: 'resolver', memory: true }), owned: true };
+  // FeltDB memory instances with the same namespace share their data within a process: each memory runtime
+  // gets its own, or two resolvers (two tests, two embedded instances) would see each other's state.
+  if ('memory' in state) return { db: createFeltDB({ namespace: `resolver-${randomUUID()}`, memory: true }), owned: true };
   if ('remote' in state) {
     return { db: createFeltDB({ namespace: 'resolver', mode: 'remote', server: state.remote } as never), owned: true };
   }

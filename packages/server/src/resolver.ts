@@ -24,6 +24,7 @@ import {
   type Json,
   type PutInput,
   type ReferenceSummary,
+  type RefName,
   type ResolveInput,
   type ResolveResult,
   type RevokeInput,
@@ -73,6 +74,11 @@ export class Resolver {
   readonly #targets: Omit<TargetCheckOptions, 'lookup'>;
   readonly #now: () => Date;
   readonly #changes = new EventEmitter();
+  /**
+   * Writes to one reference run one at a time in this process. A writer that loses the race then fails its
+   * revision check before it touches custody, so no secret version is stored that no revision points at.
+   */
+  readonly #writes = new Map<string, Promise<unknown>>();
 
   constructor(options: ResolverOptions) {
     this.#store = options.store;
@@ -189,6 +195,10 @@ export class Resolver {
 
   async put(principal: Principal, input: PutInput): Promise<WriteResult> {
     const ref = this.#ref(input.ref);
+    return this.#serial(principal.tenantId, ref, () => this.#put(principal, ref, input));
+  }
+
+  async #put(principal: Principal, ref: RefName, input: PutInput): Promise<WriteResult> {
     const decision = await this.#require(principal, 'write', ref);
     const expected = expectedRevision(input.expectedRevision);
     const current = await this.#store.reference(principal.tenantId, ref);
@@ -231,6 +241,10 @@ export class Resolver {
 
   async rollback(principal: Principal, input: RollbackInput): Promise<WriteResult> {
     const ref = this.#ref(input.ref);
+    return this.#serial(principal.tenantId, ref, () => this.#rollback(principal, ref, input));
+  }
+
+  async #rollback(principal: Principal, ref: RefName, input: RollbackInput): Promise<WriteResult> {
     await this.#require(principal, 'write', ref);
     const expected = expectedRevision(input.expectedRevision);
     const current = await this.#existing(principal.tenantId, ref);
@@ -254,10 +268,18 @@ export class Resolver {
   /** Revocation is total: every resolution of the name fails from now on, and secret material is destroyed. */
   async revoke(principal: Principal, input: RevokeInput): Promise<WriteResult> {
     const ref = this.#ref(input.ref);
+    return this.#serial(principal.tenantId, ref, () => this.#revoke(principal, ref, input));
+  }
+
+  async #revoke(principal: Principal, ref: RefName, input: RevokeInput): Promise<WriteResult> {
     await this.#require(principal, 'write', ref);
     const expected = expectedRevision(input.expectedRevision);
     const current = await this.#existing(principal.tenantId, ref);
-    if (current.state === 'revoked') throw new ResolverError('CONFLICT', REASONS.revoked, `${ref} is already revoked`);
+    if (current.state === 'revoked') {
+      // The name is already revoked, but destroying the material may have failed then: finish it now.
+      if (current.kind === 'secret') await this.#destroy(principal, ref);
+      throw new ResolverError('CONFLICT', REASONS.revoked, `${ref} is already revoked`);
+    }
     if (current.revision !== expected) throw this.#stale(ref, current.revision);
     const result = await this.#commit(
       principal,
@@ -269,13 +291,43 @@ export class Resolver {
       undefined,
       'revoked',
     );
-    if (current.kind === 'secret' && this.#custody.remove) {
+    if (current.kind === 'secret') await this.#destroy(principal, ref);
+    return { ...result, dependents: await this.#dependents(principal, ref) };
+  }
+
+  /** Active references whose current binding names `ref`. Today the only such edge is a model's credential. */
+  async #dependents(principal: Principal, ref: string): Promise<RefName[]> {
+    const out: RefName[] = [];
+    for (const record of await this.#store.references(principal.tenantId)) {
+      if (record.state !== 'active' || record.kind !== 'model') continue;
+      if (!record.binding.targets.some((t) => (t.value as { credential?: string }).credential === ref)) continue;
+      if ((await this.#authorizer.decide(principal, 'read', record.ref)).allowed) out.push(record.ref);
+    }
+    return out;
+  }
+
+  async #destroy(principal: Principal, ref: string) {
+    if (!this.#custody.remove) return;
+    try {
       await this.#custody.remove({
         reference: { secretId: referenceId(principal.tenantId, ref), tenantId: principal.tenantId, kind: 'resolver-secret' },
         context: { tenantId: principal.tenantId, principalId: principal.principalId, purpose: 'resolver.revoke' },
       });
+    } catch {
+      throw new ResolverError('INTERNAL_ERROR', REASONS.custody, `${ref} is revoked, but its material could not be destroyed; revoke it again to retry`);
     }
-    return result;
+  }
+
+  #serial<T>(tenantId: string, ref: string, task: () => Promise<T>): Promise<T> {
+    const key = referenceId(tenantId, ref);
+    const previous = this.#writes.get(key) ?? Promise.resolve();
+    const next = previous.then(task, task);
+    const settled = next.catch(() => undefined);
+    this.#writes.set(key, settled);
+    void settled.then(() => {
+      if (this.#writes.get(key) === settled) this.#writes.delete(key);
+    });
+    return next;
   }
 
   // ---- grants and keys (admin) -------------------------------------------------------------------
@@ -283,15 +335,7 @@ export class Resolver {
   async grant(principal: Principal, input: { subject: string; actions: string[]; pattern: string }): Promise<Grant> {
     await this.#require(principal, 'admin', '*');
     if (typeof input.subject !== 'string' || !input.subject) throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, 'subject is required');
-    if (!Array.isArray(input.actions) || input.actions.length === 0 || !input.actions.every((a) => (ACTIONS as readonly string[]).includes(a))) {
-      throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, `actions must be a non-empty list of ${ACTIONS.join(', ')}`);
-    }
-    if (typeof input.pattern !== 'string' || !isPattern(input.pattern)) {
-      throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, 'pattern must be *, a ref:// name, or a ref:// prefix ending in /*');
-    }
-    if (input.actions.includes('admin') && input.pattern !== '*') {
-      throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, 'admin is granted on * only');
-    }
+    checkGrant(input);
     const record = await this.#store.addGrant({
       tenantId: principal.tenantId,
       subject: input.subject,
@@ -473,6 +517,20 @@ export class Resolver {
     const event: ChangeEvent = { ref: next.ref, kind: next.kind, revision, state, at };
     this.#changes.emit('change', principal.tenantId, event);
     return { ref: next.ref, revision };
+  }
+}
+
+/** Throws unless `actions` on `pattern` is a grant the resolver accepts. */
+export function checkGrant(input: { actions: unknown; pattern: unknown }): void {
+  const actions = input.actions;
+  if (!Array.isArray(actions) || actions.length === 0 || !actions.every((a) => (ACTIONS as readonly string[]).includes(a))) {
+    throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, `actions must be a non-empty list of ${ACTIONS.join(', ')}`);
+  }
+  if (typeof input.pattern !== 'string' || !isPattern(input.pattern)) {
+    throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, 'pattern must be *, a ref:// name, or a ref:// prefix ending in /*');
+  }
+  if (actions.includes('admin') && input.pattern !== '*') {
+    throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, 'admin is granted on * only');
   }
 }
 

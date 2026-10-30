@@ -75,8 +75,11 @@ resolver set ref://prod/payments/endpoint --kind endpoint --binding '{"strategy"
    read that reference, in that tenant.
 3. The client drops its cached result; the next call re-resolves with the client's own authority.
 
-Without the live stream (or if heartbeats stop for 45 s) the client falls back to each reference's TTL
-(default 30 s). If the resolver is unreachable, the client serves the last known good result for at most
+A cached result is used until a notification arrives or its TTL (default 30 s) passes, whichever comes
+first: the live stream makes changes arrive sooner, and the TTL bounds how long a missed notification (a
+reconnect, another resolver instance) can go unnoticed. Pinned resolutions are cached the same way, so a
+revocation or a removed grant reaches them too. On every (re)connect the client revalidates everything it
+holds. If the resolver is unreachable, the client serves the last known good result for at most
 `maxStaleSeconds` (default 300; 0 fails closed) and reports it through `onWarning`. Authoritative answers
 (revoked, forbidden, not found) are never covered by the cache: revocation reaches running applications.
 
@@ -92,7 +95,8 @@ Without the live stream (or if heartbeats stop for 45 s) the client falls back t
   Material lives in the vault, sealed per version with the tenant, secret and version as authenticated data.
   The vault implements AppPort Services' `SecretCustody`; plug in a KMS-backed custody the same way.
 - **Revocation is total.** A revoked reference fails every resolution, pinned or not; revoking a secret
-  destroys its material. A revoked name is never reused.
+  destroys its material (if custody fails, revoking again retries the destruction). A revoked name is never
+  reused. The response lists the active models that still name a revoked credential (`dependents`).
 - **Changes are recorded.** Every revision keeps its binding, actor and reason. History is append-only in use
   (rows are written once and never updated), but it is not tamper-evident: an administrator of the state store
   can edit rows.
@@ -140,7 +144,7 @@ The `.resolver` directory holds `vault.key` and `verifier.key` (mode 0600). In p
 | `ResolverClient.connect({ url, apiKey, live?, maxStaleSeconds?, timeoutMs?, onWarning? })` | |
 | `get(ref, { key? })` | the selected value |
 | `resolve(ref, { key?, revision? })` | everything: kind, revision, binding, selection, TTL |
-| `model(ref, { key? })` | a model target with its credential revealed as `apiKey` |
+| `model(ref, { key? })` | a model target with its credential revealed as `apiKey`; `revision` and `credentialRevision` say exactly what was used |
 | `secret(ref)` | secret material (needs `reveal`), held in memory for the TTL only |
 | `withFailover(ref, use, { key? })` | try targets in order |
 | `watch(refs, listener)` | change notifications |
@@ -210,8 +214,12 @@ instance serves both, and the tests exercise the AppPort Services paths the reso
 
 ## Limits
 
-- **One resolver process per state.** Change notifications are fanned out in process. Several resolver
-  instances need a FeltDB server for state and a shared change feed, which is not built yet.
+- **One resolver process per state.** Change notifications are fanned out in process, and the vault
+  serializes writes in process. With several instances a client connected to one instance learns of a
+  change made through another only when the reference's TTL passes. See
+  [docs/production-readiness-review.md](docs/production-readiness-review.md) for the multi-instance plan.
+- **Superseded secret versions are kept** (so pinned revisions still reveal). Rotating a leaked secret does
+  not destroy the old material; only revoking the reference does.
 - **History is not tamper-evident.** Rows are written once, but nothing signs or chains them.
 - **Steering is client-side.** A client that ignores the weights can pick any target it may read. Weights
   steer traffic; they do not authorize it.

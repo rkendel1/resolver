@@ -82,6 +82,11 @@ export interface PutInput {
 export interface WriteResult {
   ref: RefName;
   revision: number;
+  /**
+   * Revocation only: active references whose current binding still names the revoked one (a model's
+   * credential), among those the caller may read. They keep resolving, and fail when the dependency is used.
+   */
+  dependents?: RefName[];
 }
 
 export interface RollbackInput {

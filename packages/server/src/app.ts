@@ -171,8 +171,10 @@ async function* whileLive<T>(source: AsyncGenerator<T>, isLive: () => Promise<bo
 
 async function* withHeartbeat<T>(source: AsyncGenerator<T>, signal: AbortSignal): AsyncGenerator<T | { heartbeat: string }> {
   const iterator = source[Symbol.asyncIterator]();
+  // Starting the source subscribes it; the first heartbeat tells the client that changes from now on reach it.
   let pending = iterator.next();
   try {
+    yield { heartbeat: new Date().toISOString() };
     while (!signal.aborted) {
       let timer: NodeJS.Timeout | undefined;
       const tick = new Promise<'tick'>((resolve) => (timer = setTimeout(() => resolve('tick'), HEARTBEAT_MS)));
