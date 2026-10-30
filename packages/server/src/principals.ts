@@ -7,7 +7,12 @@ import type { AppPortServices, VerifiedPrincipal } from '@appport/services';
  */
 export async function isLive(services: AppPortServices, principal: VerifiedPrincipal): Promise<boolean> {
   if (principal.verifiedBy !== 'api_key') return true;
-  const key = await services.apiKeys.getApiKey(principal.tenantId, principal.principalId).catch(() => null);
+  return keyIsLive(services, principal.tenantId, principal.principalId);
+}
+
+/** Whether the API key `keyId` of `tenantId` is still valid (management sessions record the key they came from). */
+export async function keyIsLive(services: AppPortServices, tenantId: string, keyId: string): Promise<boolean> {
+  const key = await services.apiKeys.getApiKey(tenantId, keyId).catch(() => null);
   if (!key || key.revokedAt || key.status === 'revoked') return false;
   return !key.expiresAt || Date.parse(key.expiresAt) > Date.now();
 }

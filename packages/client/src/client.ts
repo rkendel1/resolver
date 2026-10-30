@@ -316,21 +316,31 @@ export class ResolverClient {
 
   async #connection(): Promise<AppPortClient> {
     if (this.#client) return this.#client;
-    this.#connecting ??= AppPort.discover({
-      origin: this.#options.url,
-      headers: { authorization: `Bearer ${this.#options.apiKey}` },
-      ...(this.#options.fetch ? { fetch: this.#options.fetch } : {}),
-      timeoutMs: this.#options.timeoutMs,
-    })
-      .then((client) => (this.#client = client))
-      .finally(() => (this.#connecting = undefined));
+    if (!this.#connecting) {
+      const discovering = AppPort.discover({
+        origin: this.#options.url,
+        headers: { authorization: `Bearer ${this.#options.apiKey}` },
+        ...(this.#options.fetch ? { fetch: this.#options.fetch } : {}),
+        timeoutMs: this.#options.timeoutMs,
+      });
+      // `timeoutMs` bounds discovery's HTTP request, but not the transport handshake after it (a WebSocket
+      // to a resolver whose state store hangs never completes). The client holds its own deadline, and a
+      // connection that completes after it gave up is closed rather than leaked.
+      this.#connecting = within(discovering, this.#options.timeoutMs, 'connecting to the resolver')
+        .then((client) => (this.#client = client))
+        .catch((error) => {
+          void discovering.then((late) => late.close(), () => undefined);
+          throw error;
+        })
+        .finally(() => (this.#connecting = undefined));
+    }
     return this.#connecting;
   }
 
   async #call<T>(name: string, input: unknown): Promise<T> {
     try {
       const client = await this.#connection();
-      return await client.call<T>(name, input, { timeoutMs: this.#options.timeoutMs });
+      return await within(client.call<T>(name, input, { timeoutMs: this.#options.timeoutMs }), this.#options.timeoutMs, name);
     } catch (error) {
       const failure = toError(error);
       if (!AUTHORITATIVE.has(failure.code)) {
@@ -374,6 +384,9 @@ export class ResolverClient {
         if (this.#closed) return;
         this.#options.onWarning?.({ kind: 'disconnected', error: toError(error) });
       }
+      // However the stream ended (the resolver restarted, this key's access shrank, a resync), changes may
+      // have been missed: everything held is revalidated on its next use, with this client's own authority.
+      this.#invalidateAll();
       this.#stream = undefined;
       if (this.#closed) return;
       await new Promise((resolve) => setTimeout(resolve, delay));
@@ -398,4 +411,13 @@ export class ResolverClient {
 
 function cacheKey(ref: string, revision?: number): string {
   return revision === undefined ? ref : `${ref}#${revision}`;
+}
+
+/** `work`, or a transport failure once `ms` have passed: no call into the resolver waits longer than that. */
+function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new ResolverClientError('TIMEOUT', 'client.timeout', `${what} took longer than ${ms} ms`)), ms);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }

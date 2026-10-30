@@ -9,6 +9,8 @@
  * 2. `Authorization: Bearer <API key>`;
  * 3. a browser session: an operator signs in with an API key once and gets an HttpOnly, SameSite=Strict
  *    cookie. The browser's script never sees the key or the session, and keeps nothing in storage.
+ *    Sessions live in the shared state (only the token's hash and the key id it came from), so any
+ *    resolver instance behind a load balancer serves them, and revoking the key ends them everywhere.
  *
  * Every operation goes through the same `Resolver` methods and grants as the AppPort API: the UI can do
  * nothing a key could not. Secret values can be set from the UI but are never returned to it.
@@ -20,7 +22,9 @@ import type { AppPortServices, PrincipalClaims, VerifiedPrincipal } from '@apppo
 import { INTELLIGENCE_CATALOG } from '@appport/services';
 import { REASONS } from '@appport/resolver-core';
 import { isOperator } from '../authorizer.js';
-import { isLive } from '../principals.js';
+import type { Logger } from '../log.js';
+import { keyIsLive } from '../principals.js';
+import type { ResolverStore } from '../store.js';
 import { checkGrant, ResolverError, type Resolver } from '../resolver.js';
 import { PAGES } from './contribution.js';
 import { renderPage, SIGN_IN } from './pages.js';
@@ -28,6 +32,8 @@ import { renderPage, SIGN_IN } from './pages.js';
 export interface ManagementOptions {
   resolver: Resolver;
   services: AppPortServices;
+  store: ResolverStore;
+  log: Logger;
   /**
    * Host identity adapter (an SSO proxy header, an embedding application's session). Identity only:
    * what the principal may do comes from grants. Return `principalType: 'resolver-operator'` for full access.
@@ -51,22 +57,15 @@ class HttpError extends Error {
   }
 }
 
-interface Session {
-  principal: VerifiedPrincipal;
-  created: number;
-  lastUsed: number;
-}
-
 type Caller = { principal: VerifiedPrincipal; via: 'host' | 'bearer' | 'session' };
 
 const STATUS: Record<string, number> = { INVALID_INPUT: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, NOT_FOUND: 404, CONFLICT: 409 };
 
 export function createManagementHandler(options: ManagementOptions) {
-  const { resolver, services } = options;
+  const { resolver, services, store, log } = options;
   const signInEnabled = options.signIn !== false;
   const ttl = options.sessionTtlMs ?? 8 * 3600_000;
   const idle = options.sessionIdleMs ?? 30 * 60_000;
-  const sessions = new Map<string, Session>();
   const attempts = new Map<string, { count: number; since: number }>();
   const pageRoutes = new Map([...PAGES, SIGN_IN].map((p) => [p.route, p]));
 
@@ -98,15 +97,18 @@ export function createManagementHandler(options: ManagementOptions) {
     }
     const token = cookieToken(request);
     if (token) {
-      const key = tokenKey(token);
-      const session = sessions.get(key);
+      const id = tokenKey(token);
+      const session = await store.session(id);
       const now = Date.now();
-      if (!session || now - session.created > ttl || now - session.lastUsed > idle || !(await isLive(services, session.principal))) {
-        sessions.delete(key);
+      if (!session || now - session.created > ttl || now - session.lastUsed > idle || !(await keyIsLive(services, session.tenantId, session.keyId))) {
+        if (session) await store.dropSession(id);
         return null;
       }
-      session.lastUsed = now;
-      return { principal: session.principal, via: 'session' };
+      // Written back at most once a minute: the idle timeout does not need every request recorded.
+      if (now - session.lastUsed > 60_000) await store.saveSession({ ...session, lastUsed: now });
+      // The key's identity, re-established for this request; its liveness was checked just above.
+      const principal = services.identify({ principalId: session.keyId, principalType: 'api_key', tenantId: session.tenantId });
+      return principal ? { principal, via: 'session' } : null;
     }
     return null;
   }
@@ -144,16 +146,16 @@ export function createManagementHandler(options: ManagementOptions) {
     if (parsed.host !== host) throw new HttpError(403, 'FORBIDDEN', 'cross-origin request refused');
   }
 
-  /** Drops expired sessions and stale sign-in counters, so neither map grows without bound. */
-  function sweep(now: number) {
-    for (const [key, session] of sessions) if (now - session.created > ttl || now - session.lastUsed > idle) sessions.delete(key);
+  /** Drops stale sign-in counters (per instance) and idle sessions (shared), so neither grows without bound. */
+  async function sweep(now: number) {
     for (const [ip, entry] of attempts) if (now - entry.since > SIGN_IN_WINDOW_MS) attempts.delete(ip);
+    await store.dropSessionsIdleSince(now - idle).catch(() => undefined);
   }
 
   function throttle(request: IncomingMessage) {
     const ip = request.socket.remoteAddress ?? 'unknown';
     const now = Date.now();
-    sweep(now);
+    void sweep(now);
     const entry = attempts.get(ip);
     if (!entry || now - entry.since > SIGN_IN_WINDOW_MS) {
       attempts.set(ip, { count: 1, since: now });
@@ -185,9 +187,13 @@ export function createManagementHandler(options: ManagementOptions) {
       const { apiKey } = await body(request);
       if (typeof apiKey !== 'string' || !apiKey) throw new HttpError(400, 'INVALID_INPUT', 'apiKey is required');
       const principal = (await services.apiKeys.authenticateApiKey(apiKey.trim())) as VerifiedPrincipal | null;
-      if (!principal) throw new HttpError(401, 'UNAUTHORIZED', 'that API key is not valid');
+      if (!principal) {
+        log.info('ui.sign-in', { code: 'UNAUTHORIZED', reason: 'ui.bad-key' });
+        throw new HttpError(401, 'UNAUTHORIZED', 'that API key is not valid');
+      }
       const token = randomBytes(32).toString('base64url');
-      sessions.set(tokenKey(token), { principal, created: Date.now(), lastUsed: Date.now() });
+      await store.saveSession({ id: tokenKey(token), tenantId: principal.tenantId, keyId: principal.principalId, created: Date.now(), lastUsed: Date.now() });
+      log.info('ui.sign-in', { code: 'OK', tenant: principal.tenantId, principal: principal.principalId });
       const cookie = `${COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(ttl / 1000)}${secure(request) ? '; Secure' : ''}`;
       return send(response, 204, undefined, { 'set-cookie': cookie });
     }
@@ -200,10 +206,10 @@ export function createManagementHandler(options: ManagementOptions) {
     if (path === '/_resolver/session') {
       if (method === 'DELETE') {
         const token = cookieToken(request);
-        if (token) sessions.delete(tokenKey(token));
+        if (token) await store.dropSession(tokenKey(token));
         return send(response, 204, undefined, { 'set-cookie': `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure(request) ? '; Secure' : ''}` });
       }
-      const key = p.verifiedBy === 'api_key' ? await services.apiKeys.getApiKey(p.tenantId, p.principalId).catch(() => null) : null;
+      const key = p.principalType === 'api_key' ? await services.apiKeys.getApiKey(p.tenantId, p.principalId).catch(() => null) : null;
       return send(response, 200, {
         principal: p.principalId,
         ...(key ? { name: key.name } : {}),
@@ -303,15 +309,12 @@ export function createManagementHandler(options: ManagementOptions) {
       }
       const code = (error as { code?: string }).code;
       if (code === 'DENIED') return send(response, 403, { error: { code: 'FORBIDDEN', message: 'not allowed' } });
+      log.error('ui.request', { operation: `${request.method} ${url.pathname}`, code: 'INTERNAL_ERROR', error: (error as { code?: string }).code ?? (error as Error).name });
       send(response, 500, { error: { code: 'INTERNAL_ERROR', message: 'the resolver could not complete the request' } });
     }
   }
 
   return {
     handle: (request: IncomingMessage, response: ServerResponse) => void handle(request, response),
-    /** For tests and hosts: the number of live browser sessions. */
-    get sessionCount() {
-      return sessions.size;
-    },
   };
 }

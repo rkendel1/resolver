@@ -34,7 +34,7 @@ import {
   type WriteResult,
 } from '@appport/resolver-core';
 import { GrantAuthorizer } from './authorizer.js';
-import { referenceId, type ReferenceRecord, type ResolverStore, type RevisionRecord } from './store.js';
+import { referenceId, type ChangeRow, type ReferenceRecord, type ResolverStore, type RevisionRecord } from './store.js';
 import { checkSchema, checkTargets, type TargetCheckOptions } from './targets.js';
 import { isVersionedCustody, VaultError } from './vault.js';
 
@@ -60,7 +60,8 @@ export interface ResolverOptions {
   custody: SecretCustody<string>;
   /** AppPort Services on the same FeltDB: API keys and principals. */
   services: AppPortServices;
-  targets?: Omit<TargetCheckOptions, 'lookup'>;
+  /** Target checks, including the outbound policy agent verification must go through. */
+  targets: Omit<TargetCheckOptions, 'lookup'>;
   now?: () => Date;
 }
 
@@ -79,13 +80,15 @@ export class Resolver {
    * revision check before it touches custody, so no secret version is stored that no revision points at.
    */
   readonly #writes = new Map<string, Promise<unknown>>();
+  /** Set by the runtime: a commit wakes the sync loop, which notifies watchers in sequence order. */
+  #onCommitted: ((seq: number) => void) | undefined;
 
   constructor(options: ResolverOptions) {
     this.#store = options.store;
     this.#authorizer = options.authorizer;
     this.#custody = options.custody;
     this.#services = options.services;
-    this.#targets = options.targets ?? {};
+    this.#targets = options.targets;
     this.#now = options.now ?? (() => new Date());
     this.#changes.setMaxListeners(0);
   }
@@ -172,11 +175,22 @@ export class Resolver {
       queue.push(event);
       wake?.();
     };
+    let ended = false;
+    const end = () => {
+      ended = true;
+      wake?.();
+    };
     this.#changes.on('change', listener);
+    this.#changes.on('resync', end);
+    // The watcher's access shrank: end the stream, so its client revalidates everything with its own authority.
+    const shrank = (tenantId: string, subject: string) => {
+      if (tenantId === principal.tenantId && subject === principal.principalId) end();
+    };
+    this.#changes.on('authority', shrank);
     const stop = () => wake?.();
     signal.addEventListener('abort', stop);
     try {
-      while (!signal.aborted) {
+      while (!signal.aborted && !ended) {
         const event = queue.shift();
         if (!event) {
           await new Promise<void>((resolve) => (wake = resolve));
@@ -187,8 +201,42 @@ export class Resolver {
       }
     } finally {
       this.#changes.off('change', listener);
+      this.#changes.off('resync', end);
+      this.#changes.off('authority', shrank);
       signal.removeEventListener('abort', stop);
     }
+  }
+
+  /** Routes this resolver's change notifications through `listener` (the sync loop) instead of announcing them at once. */
+  onCommitted(listener: (seq: number) => void): void {
+    this.#onCommitted = listener;
+  }
+
+  /**
+   * A committed revision, from the shared state in sequence order (`sync.ts`): notifies this instance's
+   * watchers. The sync loop calls it once per sequence number.
+   */
+  applyCommitted(row: ChangeRow): void {
+    if (row.type === 'authority') {
+      this.#changes.emit('authority', row.tenantId, row.subject);
+      return;
+    }
+    const event: ChangeEvent = {
+      ref: row.ref,
+      kind: row.kind!,
+      revision: row.revision,
+      state: row.state ?? (row.action === 'revoke' ? 'revoked' : 'active'),
+      at: row.at,
+    };
+    this.#changes.emit('change', row.tenantId, event);
+  }
+
+  /**
+   * Ends every watch stream on this instance. Clients reconnect and revalidate everything they hold; used
+   * when this instance cannot tell exactly which changes it missed.
+   */
+  resyncWatchers(): void {
+    this.#changes.emit('resync');
   }
 
   // ---- writes -----------------------------------------------------------------------------------
@@ -236,7 +284,17 @@ export class Resolver {
       binding = checked.value;
       await this.#checkTargets(principal, kind, binding, schema);
     }
-    return this.#commit(principal, current, { ref, kind, schema, binding, ttlSeconds }, current ? 'update' : 'create', expected, input.reason);
+    try {
+      return await this.#commit(principal, current, { ref, kind, schema, binding, ttlSeconds }, current ? 'update' : 'create', expected, input.reason);
+    } catch (error) {
+      // A definite conflict means the revision was never committed (another writer won): no revision will
+      // ever point at the stored version, so its material is deleted rather than kept. Any other failure
+      // (a lost response) may hide a commit that did apply, so the version is left for `verify` to report.
+      if (kind === 'secret' && error instanceof ResolverError && error.reason === REASONS.stale) {
+        await this.#discard(principal, ref, binding).catch(() => undefined);
+      }
+      throw error;
+    }
   }
 
   async rollback(principal: Principal, input: RollbackInput): Promise<WriteResult> {
@@ -306,6 +364,14 @@ export class Resolver {
     return out;
   }
 
+  async #discard(principal: Principal, ref: string, binding: Binding) {
+    const custody = this.#custody;
+    if (!isVersionedCustody(custody) || !custody.discardVersion) return;
+    const version = (binding.targets[0]?.value as SecretTarget | undefined)?.version;
+    if (version === undefined) return;
+    await custody.discardVersion({ reference: { secretId: referenceId(principal.tenantId, ref), tenantId: principal.tenantId }, version });
+  }
+
   async #destroy(principal: Principal, ref: string) {
     if (!this.#custody.remove) return;
     try {
@@ -350,7 +416,9 @@ export class Resolver {
 
   async ungrant(principal: Principal, input: { id: string }): Promise<{ removed: boolean }> {
     await this.#require(principal, 'admin', '*');
-    return { removed: await this.#store.removeGrant(principal.tenantId, input.id) };
+    const result = await this.#store.removeGrant(principal.tenantId, input.id);
+    if (result.removed) this.#onCommitted?.(result.seq);
+    return { removed: result.removed };
   }
 
   async grants(principal: Principal): Promise<{ grants: Grant[] }> {
@@ -435,7 +503,8 @@ export class Resolver {
         value,
         context: { tenantId: principal.tenantId, principalId: principal.principalId, purpose: 'resolver.put', authorizationRef: decision.decisionId },
       });
-      const target: SecretTarget = { credentialRef: formatCredentialRef(secretId), version: stored.version };
+      const seal = (stored as { seal?: unknown }).seal;
+      const target: SecretTarget = { credentialRef: formatCredentialRef(secretId), version: stored.version, ...(typeof seal === 'string' ? { seal } : {}) };
       return { strategy: 'single', targets: [{ value: target as never }] };
     } catch {
       // Nothing the custody raised is passed on: it could echo the material.
@@ -514,8 +583,13 @@ export class Resolver {
     };
     const committed = await this.#store.commit(record, entry, expected);
     if (!committed.ok) throw this.#stale(next.ref, committed.currentRevision);
-    const event: ChangeEvent = { ref: next.ref, kind: next.kind, revision, state, at };
-    this.#changes.emit('change', principal.tenantId, event);
+    if (this.#onCommitted) {
+      // Watchers hear of it through the sync loop, in sequence order with every other instance's changes:
+      // announcing it here first could deliver a reference's revision 10 before revisions 2-9 written elsewhere.
+      this.#onCommitted(committed.seq);
+    } else {
+      this.#changes.emit('change', principal.tenantId, { ref: next.ref, kind: next.kind, revision, state, at } satisfies ChangeEvent);
+    }
     return { ref: next.ref, revision };
   }
 }
