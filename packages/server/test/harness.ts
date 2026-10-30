@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { createResolverRuntime, type ResolverRuntime } from '@appport/resolver';
+import { createResolverRuntime, type ResolverRuntime, type ResolverRuntimeOptions } from '@appport/resolver';
 import { ResolverClient, type ResolverClientOptions } from '@appport/resolver-client';
 
 export const TENANT = 'acme';
@@ -19,14 +19,17 @@ export interface Harness {
   close(): Promise<void>;
 }
 
-export async function startResolver(options: { local?: boolean } = {}): Promise<Harness> {
+export async function startResolver(options: { local?: boolean; runtime?: Partial<ResolverRuntimeOptions> } = {}): Promise<Harness> {
   const dir = mkdtempSync(path.join(tmpdir(), 'resolver-test-'));
   const runtime = await createResolverRuntime({
     state: options.local ? { local: dir } : { memory: true },
+    // Agent fixtures run on loopback; the SSRF tests configure production explicitly.
+    environment: 'development',
     vaultDirectory: path.join(dir, 'vault'),
     vaultKey: randomBytes(32),
     verifierKey: randomBytes(32).toString('hex'),
     targets: { verifyAgents: true, agentTimeoutMs: 2000 },
+    ...options.runtime,
   });
   const server = await runtime.serve({ port: 0 });
   const url = server.url.replace(/\/$/, '');

@@ -6,7 +6,8 @@
  *   reference must name an existing, active `secret` in the same tenant.
  * - `agent`: the origin is discovered over AppPort and every pinned capability digest is recomputed from
  *   the served manifest (@appport/protocol). A binding that would point consumers at a different
- *   contract is refused here, before any consumer sees it.
+ *   contract is refused here, before any consumer sees it. Discovery goes only through the outbound
+ *   policy (`outbound.ts`): an origin the resolver's configuration does not allow is never contacted.
  * - `endpoint`: structural only. The resolver never connects to endpoints.
  */
 
@@ -15,6 +16,7 @@ import { fromJSONSchema } from '@appport/schema';
 import { AppPort } from '@appport/sdk';
 import { getIntelligenceProvider } from '@appport/services';
 import type { AgentTarget, Binding, Json, Kind, ModelTarget } from '@appport/resolver-core';
+import { OutboundRefusedError, type OutboundPolicy } from './outbound.js';
 
 export interface TargetCheckOptions {
   /** Look up another reference in the same tenant (for model credentials). */
@@ -24,6 +26,8 @@ export interface TargetCheckOptions {
   /** Discover agent origins and verify pinned digests. Default true. */
   verifyAgents?: boolean;
   agentTimeoutMs?: number;
+  /** The only way agent origins are contacted. */
+  outbound: OutboundPolicy;
 }
 
 export type TargetCheck = { ok: true } | { ok: false; reason: string; error: string };
@@ -86,11 +90,26 @@ async function checkModel(target: ModelTarget, options: TargetCheckOptions): Pro
   return { ok: true };
 }
 
+function refusal(error: unknown): OutboundRefusedError | undefined {
+  for (let cause = error; cause; cause = (cause as { cause?: unknown }).cause) {
+    if (cause instanceof OutboundRefusedError) return cause;
+  }
+  return undefined;
+}
+
 async function checkAgent(target: AgentTarget, options: TargetCheckOptions): Promise<TargetCheck> {
   if (options.verifyAgents === false) return { ok: true };
   let client;
   try {
-    client = await AppPort.discover({ origin: target.origin, timeoutMs: options.agentTimeoutMs ?? 5000 });
+    // Checked before anything is sent; the policy's fetch checks again, at connect time, every request.
+    options.outbound.checkUrl(target.origin);
+    client = await AppPort.discover({
+      origin: target.origin,
+      timeoutMs: options.agentTimeoutMs ?? 5000,
+      fetch: options.outbound.fetch,
+      // HTTP only: a WebSocket would open its own connection outside the outbound policy.
+      transports: { websocket: undefined },
+    } as never);
     const manifest = await client.load();
     if (target.application && manifest.application.id !== target.application) {
       return fail('resolver.incompatible-target', `${target.origin} serves ${manifest.application.id}, not ${target.application}`);
@@ -105,6 +124,8 @@ async function checkAgent(target: AgentTarget, options: TargetCheckOptions): Pro
     }
     return { ok: true };
   } catch (error) {
+    const refused = refusal(error);
+    if (refused) return fail('resolver.outbound-refused', `${target.origin} may not be contacted (${refused.reason})`);
     return fail('resolver.agent-unreachable', `${target.origin} could not be discovered over AppPort (${(error as { code?: string }).code ?? (error as Error).message})`);
   } finally {
     await client?.close();
