@@ -29,7 +29,7 @@
     "@appport/sdk": "1.4.0",
     "@appport/server": "1.1.5",
     "@appport/services": "0.9.1",
-    "@feltdb/core": "0.16.1"
+    "@feltdb/core": "0.18.0"
   },
   "repository": {
     "type": "git",

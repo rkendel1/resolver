@@ -16,7 +16,8 @@
     "typecheck": "tsc -b tsconfig.build.json --pretty",
     "test": "vitest run",
     "clean": "tsc -b tsconfig.build.json --clean",
-    "test:browser": "vitest run --config vitest.browser.config.ts"
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "publish:packages": "node --env-file-if-exists=.env.local scripts/publish-packages.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -26,6 +27,6 @@
     "vitest": "^3.2.6"
   },
   "overrides": {
-    "@feltdb/core": "0.16.1"
+    "@feltdb/core": "0.18.0"
   }
 }
