@@ -2,9 +2,18 @@
 
 ## 0.2.0 — `@appport/resolver-client`, `@appport/resolver`
 
-Adds one client API. No change to the server, the protocol or `@appport/resolver-core` (0.1.0).
-It includes everything in 0.1.1 below. 0.1.1 was prepared and never published; 0.2.0 is the
-first release with the reveal-revocation fix.
+Adds one client API, and moves the server onto the current AppPort Services and FeltDB. No change
+to the protocol or to `@appport/resolver-core` (0.1.0, already published and unchanged). It includes
+everything in 0.1.1 below. 0.1.1 was prepared and never published; 0.2.0 is the first release with
+the reveal-revocation fix.
+
+### Dependencies: AppPort Services 0.15.0 and FeltDB 0.21.0
+
+`@appport/resolver` now pins `@appport/services` 0.15.0 (was 0.9.1) and `@feltdb/core` 0.21.0 (was
+0.18.0), the versions the rest of the AppPort / FeltKit train uses. There is one copy of each in the
+install. There is no code change: the whole suite passes unchanged, including the multi-instance
+suites against a FeltDB server 0.6.1. Nothing in Resolver uses the Services management-extension API
+yet.
 
 ### `revealSecret(ref)`: a secret's material with the revision it belongs to
 
