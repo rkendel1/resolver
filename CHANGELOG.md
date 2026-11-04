@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Resolver's grants answer the host gateway for `resolver.*` (P3)
+
+`GrantAuthorizer.authorize`, the AuthBoundry contract a host gateway calls, now answers Resolver's own
+capabilities. Before, it refused everything but `apikeys.*`. Each capability maps to the grant action it
+needs (`RESOLVER_GATEWAY_CAPABILITIES`, exported), and the answer comes from the same `decide` the
+resolver's operations use: one policy, one store (`resolver_grants`), no caching. A removed grant still
+writes the authority record instances and clients react to.
+
+- `resolver.resolve` / `history` need `read`. `resolver.reveal` (new, a gateway-only capability) needs
+  `reveal`. `put` / `rollback` / `revoke` need `write`. `grant` / `ungrant` / `grants` need `admin` on `*`.
+- `resolver.list` and `resolver.watch` are allowed to any principal of the tenant. They filter every row
+  and event by `read` themselves, so a caller with no grants still gets `[]`.
+- The resource must name the reference twice, as the resource id and the `ref` attribute, and both
+  must agree. Unmapped `resolver.*` capabilities are denied.
+- Key management stays on the host's `apikeys.*`. `resolver.keys.*` is not declared to the gateway.
+- Nothing calls the gateway for `resolver.*` yet. The standalone server's operations still call
+  `Resolver` methods directly. P4 (the management extension) declares these capabilities and routes
+  through the gateway.
+- Test: `packages/server/test/gateway-authorization.test.ts` runs a real @appport/services 0.15 gateway
+  with the capabilities declared through `defineServicesExtension`. It checks agreement with `decide`
+  across six principals (none, exact, prefix, `*`, another tenant's grant, operator) × two refs × every
+  reference capability. It also checks a mismatched or missing `ref`, admin scope, list/watch semantics,
+  denial on the next call after `ungrant`, and allow and deny evidence through `gateway.execute`.
 ### Versioned custody is required
 
 `createResolverRuntime` and `new Resolver()` refuse a custody without `withSecretVersion` (Resolver's
