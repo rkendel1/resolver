@@ -166,8 +166,9 @@ export async function createResolverRuntime(options: ResolverRuntimeOptions): Pr
     application: APPLICATION_ID,
     authorizer,
     credentials: custody,
-    ...(options.verifierKey ? { verifierKey: options.verifierKey } : {}),
-  } as never);
+    // AppPort Services reads the API-key verifier key as `apiKeyVerifierKey`.
+    ...(options.verifierKey ? { apiKeyVerifierKey: options.verifierKey } : {}),
+  });
   const resolver = new Resolver({
     store,
     authorizer,
