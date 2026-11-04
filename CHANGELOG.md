@@ -25,6 +25,33 @@ writes the authority record instances and clients react to.
   across six principals (none, exact, prefix, `*`, another tenant's grant, operator) × two refs × every
   reference capability. It also checks a mismatched or missing `ref`, admin scope, list/watch semantics,
   denial on the next call after `ungrant`, and allow and deny evidence through `gateway.execute`.
+### Versioned custody is required
+
+`createResolverRuntime` and `new Resolver()` refuse a custody without `withSecretVersion` (Resolver's
+`VersionedCustody`), with an error naming it. The latest-only fallback is removed: before, a custody
+without versions revealed whatever it held now, if its version number matched the revision's. A version
+number from a generic custody need not identify material (an environment-variable custody reports
+every value as version 1), so that check could pair a revision with another revision's material.
+
+- The vault, the default, is versioned; nothing changes for it. `multiInstance` still also requires
+  `discardVersion`.
+- A deployment configured with a custom latest-only `custody` no longer starts. Give it versions, or
+  use the vault.
+- `requireVersionedCustody()` is exported. `ResolverRuntimeOptions.custody` and
+  `ResolverOptions.custody` are typed `VersionedCustody`.
+- Tests: `packages/server/test/custody-versions.test.ts`. Refusal at startup and in the constructor (both
+  fail on the old code); revisions 1, 2 and 3 of one secret each reveal exactly their own value after
+  two later stores. The concurrent-writes test in `audit.test.ts` now runs on the versioned vault; it
+  used to exercise the latest-only path this removes.
+### Stack UI 0.6.1 (was 0.3.0)
+
+The management pages' vendored design system is the release AppPort Services 0.15 uses:
+`packages/server/vendor/stack-ui` is replaced with `rkendel1/stack-ui` 0.6.1, copied unmodified from
+AppPort Services' vendored copy (every file matches `SHA256SUMS`). The pages keep the same three
+inlined files (`tokens.css`, `core.css`, `stack-ui-core-stateless.js`) and need no code change. The
+release adds `tokens-light.css`, `brand/`, `esm/` and `conformance.mjs`, which the pages don't load.
+They ship with the package so the directory stays identical to the release. The UI test also checks
+`VERSION`.
 
 ## 0.2.0 — `@appport/resolver-client`, `@appport/resolver`
 

@@ -84,12 +84,12 @@ describe('client: a live connection never extends a result past its TTL', () => 
 });
 
 describe('secrets: concurrent writes and destruction', () => {
-  it('concurrent secret writes leave the committed revision revealable, even with a custody that keeps one version', async () => {
+  it('concurrent secret writes leave the committed revision revealable with its own material', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'resolver-custody-'));
     cleanup.push(async () => rmSync(dir, { recursive: true, force: true }));
-    const vault = createVault({ directory: dir, key: randomBytes(32) });
-    // A custody like most KMS-backed ones: it reveals the version it holds now, nothing older.
-    const custody = { withSecret: vault.withSecret, store: vault.store, status: vault.status, remove: vault.remove };
+    // Versioned custody is required (custody-versions.test.ts): both writers store a version, and only the
+    // committed revision's version is revealed. A latest-only custody is refused at startup.
+    const custody = createVault({ directory: dir, key: randomBytes(32) });
     const runtime = track(await createResolverRuntime({ state: { memory: true }, custody }));
     const operator = runtime.operator(TENANT);
     const ref = 'ref://prod/llm/key';

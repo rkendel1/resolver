@@ -102,6 +102,19 @@ export function isVersionedCustody(custody: SecretCustody<string>): custody is V
   return typeof (custody as Partial<VersionedCustody>).withSecretVersion === 'function';
 }
 
+/**
+ * Resolver's custody contract: a revision names the custody version it was written with, and a reveal
+ * returns exactly that version's material (`withSecretVersion`). A latest-only custody cannot keep that
+ * promise: its version numbers need not identify material (an environment-variable custody reports
+ * every value as version 1), so a reveal could pair a revision with another revision's material.
+ * There is no fallback; such a custody is refused before anything starts.
+ */
+export function requireVersionedCustody(custody: SecretCustody<string>): asserts custody is VersionedCustody {
+  if (!isVersionedCustody(custody)) {
+    throw new Error('secret custody must keep versions: Resolver needs withSecretVersion() so a revision always reveals the material it was written with (VersionedCustody, as the vault implements)');
+  }
+}
+
 /** Reads a 32-byte key given as 64 hex characters or base64. */
 export function parseVaultKey(text: string): Buffer {
   const trimmed = text.trim();
