@@ -2,11 +2,11 @@
 
 Status: **proposal for review.** Nothing here is implemented. It refines
 [appport-services-integration.md](./appport-services-integration.md) (resolver#5) now that the generic
-extension mechanism exists (rkendel1/appport-services#43, `6126ba2`).
+extension mechanism exists (rkendel1/appport-services#43, `a3fabd5`).
 
 Inspected:
 - Resolver default branch at `695b918` (includes #4, `revealSecret`).
-- AppPort Services `claude/services-extensions` at `6126ba2`.
+- AppPort Services `claude/services-extensions` at `a3fabd5`.
 - FeltKit `packages/sdk/src/runtime/credentials.ts` (`HostCredentials`).
 
 Statements about behavior cite the source or test that shows it. Anything not reproduced is marked
@@ -21,10 +21,15 @@ as read from source.
     script }`. A page is served only if the gateway allows **every** declared capability for the
     caller's tenant.
   - `routes(router, { db, gateway, application })` is mounted at `/v1/extensions/<id>`, behind the
-    host's `authenticate` adapter.
+    host's `authenticate` adapter. A request without a host identity is `401` before any extension
+    handler runs.
+  - Ids may not take built-in capability namespaces, and capabilities may not use built-in resource
+    types. `resolver` and resource types such as `reference` or `grant` are fine. API keys are a
+    built-in resource (`api_key`), so Resolver's key routes call the host's `apikeys.*` capabilities
+    and do not declare their own.
 - `createServices({ extensions })` binds each extension to that instance's FeltDB and gateway.
-  `createManagementRouter({ extensions: services.extensions })` mounts them and refuses an extension
-  bound to another instance.
+  `createManagementRouter({ extensions: services.extensions })` mounts only those registrations,
+  and refuses hand-built ones and those bound to another instance.
 - The renderer registers `window.AppPortServicesPages[pageId] = (ui) => node`. `ui` is
   `{ S, el, request, at, failureOf, config }`, with Stack UI 0.6.1 from the host shell.
 - `authenticate` may return `PrincipalClaims` (minted as `verifiedBy: 'host'`) or an already verified
@@ -87,7 +92,7 @@ query on the gateway. `authorize` throws on denial and records refusal evidence
   capability it does not map is denied.
 - Every Resolver operation reached through the extension runs inside
   `gateway.execute(capability, principal, { type: 'reference', tenantId, id: ref, attributes: { ref } }, …)`.
-  Admin operations use `{ type: 'grant' | 'api_key', tenantId }`. This gives page gating, a single
+  Grant operations use `{ type: 'grant', tenantId }`. Key operations go through the host's own `apikeys.*` capabilities on `api_key`, which `GrantAuthorizer` already answers. This gives page gating, a single
   enforcement path, and `service_effect_evidence` for every Resolver effect.
 - List, watch and dependents keep filtering with `decide(read)` on the same object. Their
   call-level capabilities are allowed for any principal of the tenant.
