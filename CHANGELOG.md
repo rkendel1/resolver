@@ -1,6 +1,43 @@
 # Changelog
 
-## 0.1.1 — `@appport/resolver-client`, `@appport/resolver`
+## 0.2.0 — `@appport/resolver-client`, `@appport/resolver`
+
+Adds one client API. No change to the server, the protocol or `@appport/resolver-core` (0.1.0).
+It includes everything in 0.1.1 below. 0.1.1 was prepared and never published; 0.2.0 is the
+first release with the reveal-revocation fix.
+
+### `revealSecret(ref)`: a secret's material with the revision it belongs to
+
+`secret(ref)` returns the material only. A caller that must record which credential it used
+(an integration receipt) had to ask for the revision separately. A rotation between the two
+answers then pairs revision 1 with revision 2's material.
+
+`revealSecret(ref)` returns `{ ref, revision, value }` as one result:
+
+- **One answer.** The resolver reads the reference once, reveals the custody version that
+  revision binds, and returns both in the same response. A custody without versions refuses
+  rather than reveal a different version. The client caches and invalidates the pair together.
+- **Same authority and cache as `secret()`.** It needs `reveal`, and it is dropped when the
+  key's authority shrinks. A client that does not watch, or that missed the notification, may
+  answer from cache until the reference's TTL, and never after it.
+- **Record `ref` and `revision`, never `value`.**
+- `secret(ref)` is unchanged: same return type, same behavior.
+
+Tests:
+- `packages/server/test/secret-revision.test.ts`:
+  - exact revision; rotation;
+  - concurrent rotations: 40 rotations while three readers loop, and every pair read is a
+    revision with its own material. A naive two-call implementation fails this test;
+  - reveal removed;
+  - notification invalidation;
+  - the TTL bound with no notification;
+  - no material in logs or stored files.
+- `packages/server/test/sync.test.ts` case 10: rotations through one instance while another
+  reveals, on a shared handle and on a real FeltDB server.
+
+Upgrade: `npm install @appport/resolver-client@0.2.0`.
+
+## 0.1.1 — `@appport/resolver-client`, `@appport/resolver` (prepared, not published; released as part of 0.2.0)
 
 Security fix in the client. No API change. `@appport/resolver-core` is unchanged (0.1.0).
 

@@ -165,6 +165,34 @@ for (const backend of BACKENDS) {
       await until(() => seen.events.some((e) => e.revision === 3));
     });
 
+    it('10: rotations through A while B reveals: B answers each revision with that revision\'s material', async () => {
+      const { a, b } = await pair(await backend.state());
+      const ref = 'ref://prod/integrations/rotating-key';
+      const written = new Map<number, string>();
+      const first = `m-0-${randomBytes(8).toString('hex')}`;
+      written.set((await a.resolver.put(op(a), { ref, kind: 'secret', secret: first, expectedRevision: 0 })).revision, first);
+      const seen: Array<{ revision: number; secret: string }> = [];
+      let writing = true;
+      const writer = (async () => {
+        for (let n = 1; n <= 20; n++) {
+          const next = `m-${n}-${randomBytes(8).toString('hex')}`;
+          const current = (await a.resolver.resolve(op(a), { ref })).revision;
+          written.set((await a.resolver.put(op(a), { ref, secret: next, expectedRevision: current })).revision, next);
+        }
+        writing = false;
+      })();
+      const reader = (async () => {
+        while (writing) {
+          const r = await b.resolver.resolve(op(b), { ref, reveal: true });
+          seen.push({ revision: r.revision, secret: r.secret! });
+        }
+      })();
+      await Promise.all([writer, reader]);
+      expect(written.size).toBe(21);
+      expect(seen.filter((p) => written.get(p.revision) !== p.secret)).toEqual([]);
+      expect(new Set(seen.map((p) => p.revision)).size).toBeGreaterThan(1);
+    });
+
     it('9: concurrent writes through both instances: every revision reaches both, in order, exactly once', async () => {
       const { a, b } = await pair(await backend.state());
       const seenOnA = watcher(a);

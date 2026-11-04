@@ -148,6 +148,7 @@ The `.resolver` directory holds `vault.key` and `verifier.key` (mode 0600). In p
 | `resolve(ref, { key?, revision? })` | everything: kind, revision, binding, selection, TTL |
 | `model(ref, { key? })` | a model target with its credential revealed as `apiKey`; `revision` and `credentialRevision` say exactly what was used |
 | `secret(ref)` | secret material (needs `reveal`), held in memory for the TTL only |
+| `revealSecret(ref)` | `{ ref, revision, value }`: the material and the revision it belongs to, from one resolver answer, for a receipt that names exactly which credential was used. Record `ref` and `revision`, never `value` |
 | `withFailover(ref, use, { key? })` | try targets in order |
 | `watch(refs, listener)` | change notifications |
 | `put`, `set`, `history`, `rollback`, `revoke`, `list`, `grant`, `createKey`, … | management |
