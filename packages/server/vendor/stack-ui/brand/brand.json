@@ -1,0 +1,44 @@
+{
+  "$description": "Boundry company and product identity. Source of truth for the --stack-brand-* and --stack-product-* custom properties in tokens.css and for the product accents every Boundry site and product shell uses. Identity is never a state colour: status, evidence and action tokens do not change with the product (docs/brand.md §5).",
+  "company": {
+    "light": {
+      "brand-ink": "#0b1538",
+      "brand-accent": "#0a5ce8",
+      "brand-mark-start": "#0b1538",
+      "brand-mark-end": "#0a64ff"
+    },
+    "dark": {
+      "brand-ink": "#e6ebf7",
+      "brand-accent": "#8ab4ff",
+      "brand-mark-start": "#dbe5ff",
+      "brand-mark-end": "#3d86ff"
+    }
+  },
+  "products": {
+    "$source": "FeltDB, FeltKit and AppBoundry accents come from each product's own logo and website (docs/decisions.md D30); AuthBoundry and AppPort have no accent of their own yet and keep the values first published on boundry.company. rkendel1/boundry reads these values from the vendored release.",
+    "feltdb": {
+      "light": "#18754a",
+      "dark": "#42e58d"
+    },
+    "appport": {
+      "light": "#2f6584",
+      "dark": "#7fb3d1"
+    },
+    "appboundry": {
+      "light": "#6a3fd0",
+      "dark": "#b49cf5"
+    },
+    "authboundry": {
+      "light": "#8a4b36",
+      "dark": "#e09a80"
+    },
+    "feltkit": {
+      "light": "#0b7f6e",
+      "dark": "#3fd8c4"
+    }
+  },
+  "onAccent": {
+    "light": "#ffffff",
+    "dark": "#0b1020"
+  }
+}

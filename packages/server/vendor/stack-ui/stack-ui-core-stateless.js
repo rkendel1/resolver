@@ -1,4 +1,4 @@
-/*! @stack-ui/core 0.3.0 — classic build, stateless (no theme preference). Exposes window.StackUI. */
+/*! @stack-ui/core 0.6.1 — classic build, stateless (no theme preference). Exposes window.StackUI. */
 'use strict';
 (function (global) {
 'use strict';
@@ -101,6 +101,15 @@ const CONDITION = {
   'feltdb.authority.availability': { available: P, recovering: G, degraded: A, closed: N, unknown: U },
   // flow_db: /v1/control-plane/overview `authority.lease_clock_healthy` (boolean)
   'feltdb.authority.lease_clock_healthy': { true: [P, 'Healthy'], false: [A, 'Degraded'] },
+  // authboundry: crates/authz/src/policy.rs decision `allow|deny`. A live check's
+  // deny is critical; the same word on a historical record is neutral
+  // (contract §6.3), so the two are separate fields.
+  'authboundry.decision.live': { allow: [P, 'Allow'], deny: [C, 'Deny'] },
+  'authboundry.decision.recorded': { allow: [P, 'Allow'], deny: [N, 'Deny'] },
+  // authboundry: crates/server/src/control_routes.rs delegation status
+  'authboundry.delegation.status': { active: P, pending: G, revoked: C, expired: N },
+  // authboundry: apps/web/lib/applications.ts `ApplicationStatus`
+  'authboundry.application.status': { active: P, awaiting_contract: G, disabled: N },
   // appport-services: src/jobs/models.ts `JobStatus`
   'appport.job.status': { completed: P, scheduled: G, pending: G, running: G, retrying: G, failed: C },
   // appport-services: src/notifications/models.ts `NotificationStatus`
@@ -116,6 +125,35 @@ const CONDITION = {
   // which is always `true` (a listed secret is a bound one). No other value is
   // mapped, so anything else would show as unknown rather than as a guess.
   'appport.configuration.secret.configured': { true: [P, 'Configured'] },
+  // appboundry: packages/core/src/application-lifecycle.ts `ApplicationLifecyclePhase`
+  'appboundry.lifecycle.phase': {
+    ACTIVE: [P, 'Active'], DRAFT: [G, 'Draft'], VALIDATED: [G, 'Validated'], REGISTERED: [G, 'Registered'],
+    CHANGE_PROPOSED: [A, 'Change proposed'], RETIRED: [N, 'Retired'],
+  },
+  // appboundry: apps/cloud-portal/src/read-model.ts capability provider
+  // `compatibility[].compatible`, from evaluateCompatibility against a consumer.
+  'appboundry.provider.compatible': { true: [P, 'Compatible'], false: [A, 'Incompatible'] },
+  // appboundry: packages/core/src/execution-ledger.ts `ExecutionStatus`, the
+  // ledger record the cloud portal lists. All five are written by
+  // AuthorizedExecutionService (`running` on begin, the others on complete).
+  'appboundry.execution.status': {
+    succeeded: P, running: G, failed: C, timed_out: [C, 'Timed out'], cancelled: N,
+  },
+  // appboundry: packages/core/src/application-source.ts `ApplicationSourceStatus`.
+  // `pending` is declared but no code path writes it, so it is not mapped.
+  'appboundry.source.status': { connected: P, stale: A, failed: C, disconnected: N },
+  // appboundry: packages/core/src/application-implementation.ts
+  // `ApplicationImplementationStatus`, as a condition: whether the
+  // implementation may still be selected. Whether it was verified is the
+  // separate verification field below. `failed` is declared but never written.
+  'appboundry.implementation.status': { verified: [P, 'Current'], stale: A, revoked: C },
+  // appboundry: apps/cloud-portal/src/authority.ts provider `eligibility`
+  // (ELIGIBLE | INELIGIBLE). Not being eligible in a context is not a fault.
+  'appboundry.provider.eligibility': { ELIGIBLE: [P, 'Eligible'], INELIGIBLE: [N, 'Ineligible'] },
+  // appboundry: apps/cloud-portal/src/read-model.ts `health.ready`
+  'appboundry.health.ready': { true: [P, 'Ready'], false: [C, 'Not ready'] },
+  // appboundry: apps/cloud-portal/src/read-model.ts `PortalHealthCheck.status`
+  'appboundry.health.check': { available: P, degraded: A, unavailable: C },
 };
 
 /// Verification-axis mappings: field value → verification state.
@@ -123,6 +161,21 @@ const VERIFICATION = {
   // flow_db: crates/feltdb-server/src/control_plane.rs `revision_to_json` re-checks
   // a revision's content against its id.
   'feltdb.revision.integrity_verified': { true: 'verified', false: 'verification_failed' },
+  // appboundry: packages/core/src/application-implementation.ts. `verified` is
+  // written only after the source is verified, covers the capability and
+  // attests the authoritative contract; `stale` means the contract has since
+  // changed, so that verification no longer holds. `revoked` says nothing
+  // about verification and is shown by the condition field instead.
+  // Same source field as the condition above, on the verification axis.
+  'appboundry.implementation.verification': { verified: 'verified', stale: 'not_verified' },
+  // appboundry: packages/core/src/contract-attestation.ts `ContractAttestationStatus`.
+  // The failed check is named by the value (repository identity or contract).
+  'appboundry.attestation.status': {
+    verified: 'verified', CONTRACT_MISMATCH: 'verification_failed', IDENTITY_MISMATCH: 'verification_failed',
+  },
+  // appboundry: packages/core/src/application-conformance.ts `ConformanceReport.status`;
+  // the checks are the report's own checks, PASS → passed and FAIL → failed.
+  'appboundry.conformance.status': { CONFORMING: 'verified', NON_CONFORMING: 'verification_failed' },
 };
 
 /// Freshness-axis mappings.
@@ -211,6 +264,36 @@ function normalizeChecks(checks) {
   return checks.map((check) => (typeof check === 'string'
     ? { label: check }
     : { label: String(check.label), ...(check.status ? { status: check.status } : {}) }));
+}
+
+// ---- brand.js
+// The Boundry portfolio as data (docs/brand.md). Shared marketing components
+// read it so every site names the company, links to boundry.company and lists
+// its sibling products the same way. Content mirrors rkendel1/boundry
+// content/products.json; product accents live in @stack-ui/tokens brand.json.
+// A product `href` is its own public site only where that domain was checked
+// to serve one (docs/brand.md §7); otherwise it is the product's entry on
+// boundry.company.
+
+const PORTFOLIO = Object.freeze({
+  company: Object.freeze({
+    name: 'Boundry',
+    href: 'https://boundry.company',
+    tagline: 'Infrastructure for applications and agents.',
+    family: 'Part of the Boundry family of products',
+  }),
+  products: Object.freeze([
+    { id: 'feltdb', name: 'FeltDB', mark: 'FD', category: 'Durable state', href: 'https://feltdb.com' },
+    { id: 'feltkit', name: 'FeltKit', mark: 'FK', category: 'Developer platform', href: 'https://getfeltkit.com' },
+    { id: 'appboundry', name: 'AppBoundry', mark: 'AB', category: 'Application boundaries', href: 'https://appboundry.com' },
+    { id: 'authboundry', name: 'AuthBoundry', mark: 'AU', category: 'Authority and delegation', href: 'https://authboundry.com' },
+    { id: 'appport', name: 'AppPort', mark: 'AP', category: 'Application capabilities', href: 'https://boundry.company/ecosystem/#appport' },
+  ].map((product) => Object.freeze(product))),
+});
+
+/// The portfolio entry for a product id, or null.
+function portfolioProduct(id) {
+  return PORTFOLIO.products.find((product) => product.id === id) || null;
 }
 
 // ---- view.js
@@ -674,12 +757,17 @@ function FilterBar(props) {
     node('div', { class: 'stack-filter__controls' }, [
       (props.filters || []).map((filter) => filterControl(filter, prefix, props.onChange)),
       node('div', { class: 'stack-filter__actions' }, [
-        Button({ label: props.applyLabel || 'Apply', type: 'submit', variant: 'secondary' }),
+        // Live filters apply as they change, so there is nothing to submit.
+        props.live ? null : Button({ label: props.applyLabel || 'Apply', type: 'submit', variant: 'secondary' }),
         applied && props.onClear ? Button({ label: props.clearLabel || 'Clear', variant: 'ghost', onClick: props.onClear }) : null,
       ]),
     ]),
     node('p', { class: 'stack-filter__result', role: 'status', 'aria-live': 'polite' }, present(props.result) ? props.result : ''),
-  ], props.onSubmit ? { submit: (event) => { event.preventDefault(); props.onSubmit(); } } : undefined);
+  ], props.onSubmit || props.live ? {
+    // Submitting a filter form never navigates (a single text field submits
+    // on Enter even with no button).
+    submit: (event) => { event.preventDefault(); if (props.onSubmit) props.onSubmit(); },
+  } : undefined);
 }
 
 /// Cursor pagination: previous and next, and whatever summary the product can
@@ -739,8 +827,18 @@ function Shell(props) {
   }, item.label, navigate(item.href)));
   const theme = props.theme;
   const themeId = `${mainId}-theme`;
-  const others = props.otherProducts || [];
-  return node('div', { class: cx('stack-shell', props.className), ...passthrough(props.attrs) }, [
+  // A product in the Boundry portfolio lists its siblings by default; a
+  // product passes `otherProducts` to choose (or [] to show none).
+  const others = props.otherProducts
+    || (present(product.id) && portfolioProduct(product.id)
+      ? PORTFOLIO.products.filter((entry) => entry.id !== product.id).map((entry) => ({ name: entry.name, href: entry.href }))
+      : []);
+  const family = present(product.id) && portfolioProduct(product.id) && props.family !== false;
+  return node('div', {
+    class: cx('stack-shell', props.className),
+    ...(present(product.id) ? { 'data-stack-product': product.id } : {}),
+    ...passthrough(props.attrs),
+  }, [
     // Focuses the main landmark itself: in a hash-routed product, following
     // `#main` would change the route.
     node('a', { class: 'stack-shell__skip', href: `#${mainId}` }, props.skipLabel || 'Skip to content', { click: skipToMain(mainId) }),
@@ -760,6 +858,10 @@ function Shell(props) {
             }, option.label)), theme.onChange ? { change: (event) => theme.onChange(event.target.value) } : undefined),
         ]) : null,
         props.account ? node('div', { class: 'stack-shell__account' }, props.account) : null,
+        family ? node('a', { class: 'stack-shell__family', href: PORTFOLIO.company.href }, [
+          BrandMark({ idPrefix: `${mainId}-family-mark` }),
+          node('span', {}, ['A ', PORTFOLIO.company.name, ' product']),
+        ]) : null,
       ]),
     ]),
     node('div', { class: 'stack-shell__body' }, [
@@ -770,10 +872,13 @@ function Shell(props) {
         ])),
         present(props.activityHref) ? node('div', { class: 'stack-shell__nav-group stack-shell__activity' },
           node('ul', { class: 'stack-shell__nav-list' }, navItem({ label: props.activityLabel || 'Activity', href: props.activityHref, current: props.activityCurrent }))) : null,
-        others.length ? node('div', { class: 'stack-shell__nav-group stack-shell__switcher' }, [
-          node('p', { class: 'stack-shell__nav-heading' }, 'Other Stack products'),
-          node('ul', { class: 'stack-shell__nav-list' }, others.map((other) => node('li', { class: 'stack-shell__nav-entry' },
-            node('a', { class: 'stack-shell__nav-item', href: other.href }, other.name)))),
+        others.length || family ? node('div', { class: 'stack-shell__nav-group stack-shell__switcher' }, [
+          node('p', { class: 'stack-shell__nav-heading' }, props.otherProductsLabel || 'Other Boundry products'),
+          node('ul', { class: 'stack-shell__nav-list' }, [
+            others.map((other) => node('li', { class: 'stack-shell__nav-entry' },
+              node('a', { class: 'stack-shell__nav-item', href: other.href }, other.name))),
+            family ? node('li', { class: 'stack-shell__nav-entry' }, node('a', { class: 'stack-shell__nav-item stack-shell__nav-item--company', href: PORTFOLIO.company.href }, ['About ', PORTFOLIO.company.name])) : null,
+          ]),
         ]) : null,
       ]),
       node('main', { class: 'stack-shell__main', id: mainId, tabindex: '-1', ...passthrough(props.mainAttrs) }, props.children || null),
@@ -960,11 +1065,331 @@ function ConfirmAction(props) {
   });
 }
 
+// ---- Evidence (PR5) -------------------------------------------------------
+
+/// What a record shows and on what basis (contract §5, §7.9). Each claim has
+/// its own label and value. A claim the product checked carries its
+/// verification, shown with VerificationBadge; a claim without one is a
+/// recorded fact, and the summary says so instead of implying it was checked.
+function EvidenceSummary(props) {
+  const id = idPart(props.id || 'stack-evidence');
+  const claims = (props.claims || []).filter((claim) => claim && present(claim.label));
+  // A claim counts as checked only when a check was made: verified, failed,
+  // or not verified. "Not evaluated" (including "verified" with no check
+  // listed) is a record, like a claim with no verification at all.
+  const states = claims.map((claim) => (present(claim.verification) ? verification(claim.verification, claim.checks).state : 'not_evaluated'));
+  const checked = states.filter((value) => value !== 'not_evaluated');
+  const verified = checked.filter((value) => value === 'verified').length;
+  const failed = checked.filter((value) => value === 'verification_failed').length;
+  const recorded = states.length - checked.length;
+  const state = checked.length === 0 ? 'recorded' : verified === checked.length && recorded === 0 ? 'verified' : 'partial';
+  const recordedNote = recorded ? ` · ${recorded} recorded, not checked` : '';
+  const summary = state === 'recorded'
+    ? 'Recorded facts · not independently verified'
+    : state === 'verified'
+      ? (checked.length === 1 ? 'Verified' : `All ${checked.length} claims verified`)
+      : `${verified} of ${checked.length} checked claims verified${failed ? ` · ${failed} failed` : ''}${recordedNote}`;
+  return node('section', {
+    class: cx('stack-evidence', `stack-evidence--${state}`, props.className),
+    'aria-labelledby': `${id}-title`,
+    'data-evidence': state,
+    ...passthrough(props.attrs),
+  }, [
+    node('div', { class: 'stack-evidence__header' }, [
+      node(heading(props.headingLevel || 2), { class: 'stack-evidence__title', id: `${id}-title` }, present(props.title) ? props.title : 'Evidence'),
+      props.outcome ? node('div', { class: 'stack-evidence__outcome' }, props.outcome) : null,
+    ]),
+    node('p', { class: 'stack-evidence__summary' }, summary),
+    claims.length ? node('dl', { class: 'stack-evidence__claims' }, claims.map((claim) => {
+      const missing = !present(claim.value) && claim.value !== 0 && claim.value !== false;
+      return node('div', {
+        class: 'stack-evidence__claim',
+        ...(present(claim.verification) ? { 'data-verification': verification(claim.verification, claim.checks).state } : {}),
+        ...passthrough(claim.attrs),
+      }, [
+        node('dt', { class: 'stack-evidence__label' }, claim.label),
+        node('dd', {
+          class: cx('stack-evidence__value', claim.mono ? 'stack-evidence__value--mono' : null),
+          ...(missing ? { 'data-missing': 'true' } : {}),
+        }, missing ? '—' : (typeof claim.value === 'boolean' ? String(claim.value) : claim.value)),
+        present(claim.verification) ? node('dd', { class: 'stack-evidence__check' }, VerificationBadge({
+          state: claim.verification, checks: claim.checks, evidenceHref: claim.evidenceHref,
+        })) : null,
+      ]);
+    })) : null,
+    present(props.source) || present(props.recordedAt)
+      ? node('p', { class: 'stack-evidence__source' }, [
+        present(props.source) ? props.source : 'Recorded',
+        present(props.recordedAt) ? [' · ', timeNode(props.recordedAt, 'stack-evidence__at')] : null,
+      ])
+      : null,
+  ]);
+}
+
+// ---- Notices, choices and history (0.6.0) ------------------------------------
+
+const ALERT_TONES = ['info', 'attention', 'critical'];
+const ALERT_GLYPHS = { info: 'i', attention: '▲', critical: '✕' };
+
+/// A persistent page-level notice (contract §5). Critical notices interrupt
+/// (role=alert); info and attention are announced politely (role=status).
+/// Information is not a state: an Alert never stands in for a StatusIndicator.
+function Alert(props) {
+  const tone = ALERT_TONES.includes(props.tone) ? props.tone : 'info';
+  return node('div', {
+    class: cx('stack-alert', `stack-alert--${tone}`, props.className),
+    role: tone === 'critical' ? 'alert' : 'status',
+    'data-tone': tone,
+    ...passthrough(props.attrs),
+  }, [
+    node('span', { class: 'stack-alert__glyph', 'aria-hidden': 'true' }, ALERT_GLYPHS[tone]),
+    node('div', { class: 'stack-alert__content' }, [
+      present(props.title) ? node('p', { class: 'stack-alert__title' }, props.title) : null,
+      props.children ? node('div', { class: 'stack-alert__body' }, props.children) : null,
+      props.actions ? node('div', { class: 'stack-alert__actions' }, props.actions) : null,
+    ]),
+  ]);
+}
+
+/// One labelled checkbox. The label is the control's name and is always
+/// visible; hint and error are described by id, as for every field.
+/// `onChange(checked)` is called on every change; without it the box is
+/// uncontrolled and a form reads it on submit.
+function Checkbox(props) {
+  const id = fieldId(props);
+  const given = props.checked !== undefined && props.checked !== null;
+  const control = node('input', {
+    class: 'stack-checkbox__control',
+    type: 'checkbox',
+    id,
+    ...(present(props.name) ? { name: props.name } : {}),
+    ...(present(props.value) ? { value: String(props.value) } : {}),
+    ...(given && props.checked ? { checked: true } : {}),
+    ...controlState(props, id),
+  }, [], props.onChange ? { change: (event) => props.onChange(Boolean(event.target.checked)) } : undefined);
+  return node('div', {
+    class: cx('stack-checkbox', props.error ? 'stack-checkbox--invalid' : null, props.className),
+    ...passthrough(props.attrs),
+  }, [
+    node('div', { class: 'stack-checkbox__row' }, [
+      control,
+      node('label', { class: 'stack-checkbox__label', for: id }, [
+        props.label,
+        props.required ? node('span', { class: 'stack-field__required', 'aria-hidden': 'true' }, ' *') : null,
+      ]),
+    ]),
+    present(props.hint) ? node('p', { class: 'stack-field__hint', id: `${id}-hint` }, props.hint) : null,
+    present(props.error) ? node('p', { class: 'stack-field__error', id: `${id}-error` }, props.error) : null,
+  ]);
+}
+
+/// Related controls under one visible legend (a set of checkboxes, a pair of
+/// fields). The legend names the group for assistive technology; a group
+/// error is described on the fieldset.
+function FieldGroup(props) {
+  const id = idPart(props.id || 'stack-group');
+  const described = [present(props.hint) ? `${id}-hint` : null, present(props.error) ? `${id}-error` : null].filter(Boolean);
+  return node('fieldset', {
+    class: cx('stack-fieldgroup', props.error ? 'stack-fieldgroup--invalid' : null, props.className),
+    id,
+    ...(described.length ? { 'aria-describedby': described.join(' ') } : {}),
+    ...(props.disabled ? { disabled: true } : {}),
+    ...passthrough(props.attrs),
+  }, [
+    node('legend', { class: 'stack-fieldgroup__legend' }, [
+      props.legend,
+      props.required ? node('span', { class: 'stack-field__required', 'aria-hidden': 'true' }, ' *') : null,
+    ]),
+    present(props.hint) ? node('p', { class: 'stack-field__hint', id: `${id}-hint` }, props.hint) : null,
+    node('div', { class: 'stack-fieldgroup__controls' }, props.children || null),
+    present(props.error) ? node('p', { class: 'stack-field__error', id: `${id}-error` }, props.error) : null,
+  ]);
+}
+
+/// Events, audit records and history, newest first as the product orders
+/// them (contract §5, §7.9). Each item has a time; `actor`, `status`,
+/// `detail` and `href` are optional. `hasMore` says older activity exists
+/// instead of implying the list is complete. Loading, error and empty are
+/// part of the timeline, as they are of DataTable.
+function ActivityTimeline(props) {
+  const items = (props.items || []).filter((item) => item && present(item.summary));
+  const label = present(props.label) ? props.label : 'Activity';
+  let body;
+  // `error` is the product's message, or { title, message, code, requestId, onRetry }.
+  if (props.error) body = ErrorPanel(typeof props.error === 'string' ? { message: props.error } : props.error);
+  else if (props.loading && !items.length) body = Loading({ what: present(props.what) ? props.what : 'activity' });
+  else if (!items.length) body = EmptyState({ title: present(props.emptyTitle) ? props.emptyTitle : 'No activity recorded', headingLevel: props.headingLevel || 3 });
+  else {
+    body = node('ol', { class: 'stack-timeline__list', 'aria-label': label }, items.map((item, index) => node('li', {
+      class: 'stack-timeline__item',
+      ...passthrough(item.attrs),
+    }, [
+      node('span', { class: 'stack-timeline__marker', 'aria-hidden': 'true' }),
+      node('div', { class: 'stack-timeline__content' }, [
+        node('p', { class: 'stack-timeline__summary' }, present(item.href)
+          ? node('a', { class: 'stack-timeline__link', href: item.href }, item.summary)
+          : item.summary),
+        node('p', { class: 'stack-timeline__meta' }, [
+          present(item.at) ? timeNode(item.at, 'stack-timeline__at') : node('span', { class: 'stack-timeline__at', 'data-missing': 'true' }, 'Time not recorded'),
+          present(item.actor) ? [' · ', node('span', { class: 'stack-timeline__actor' }, item.actor)] : null,
+          item.status ? [' ', node('span', { class: 'stack-timeline__status' }, item.status)] : null,
+        ]),
+        item.detail ? node('div', { class: 'stack-timeline__detail' }, item.detail) : null,
+      ]),
+    ], undefined, present(item.id) ? item.id : index)));
+  }
+  return node('section', {
+    class: cx('stack-timeline', props.className),
+    ...(props.loading ? { 'aria-busy': 'true' } : {}),
+    ...passthrough(props.attrs),
+  }, [
+    body,
+    props.hasMore && items.length ? node('p', { class: 'stack-timeline__more' }, [
+      present(props.moreHref)
+        ? node('a', { href: props.moreHref, class: 'stack-timeline__link' }, props.moreLabel || 'Older activity exists')
+        : (props.onMore ? Button({ label: props.moreLabel || 'Load older activity', onClick: props.onMore, busy: Boolean(props.loading) }) : (props.moreLabel || 'Older activity exists')),
+    ]) : null,
+  ]);
+}
+
+// ---- Brand and marketing foundation (0.6.0, docs/brand.md) --------------------
+
+/// The Boundry mark: two bands forming a B, drawn from the company mark
+/// tokens so it follows the theme. Decorative unless given a `title`.
+function BrandMark(props) {
+  const id = idPart(props.idPrefix || 'stack-brand-mark');
+  const titled = present(props.title);
+  return node('svg', {
+    class: cx('stack-brand-mark', props.className),
+    xmlns: 'http://www.w3.org/2000/svg',
+    viewBox: '0 0 340 315',
+    focusable: 'false',
+    ...(titled ? { role: 'img', 'aria-labelledby': `${id}-title` } : { 'aria-hidden': 'true' }),
+    ...passthrough(props.attrs),
+  }, [
+    titled ? node('title', { id: `${id}-title` }, props.title) : null,
+    node('defs', {}, node('linearGradient', { id: `${id}-fill`, x1: '0', y1: '0', x2: '340', y2: '0', gradientUnits: 'userSpaceOnUse' }, [
+      node('stop', { class: 'stack-brand-mark__start', offset: '0.2' }),
+      node('stop', { class: 'stack-brand-mark__end', offset: '0.85' }),
+    ])),
+    node('path', { fill: `url(#${id}-fill)`, d: 'M0 0H250C298 0 330 38 329 84C328 114 309 135 281 143L0 269V182L225 80H0Z' }),
+    node('path', { fill: `url(#${id}-fill)`, d: 'M0 315L290 182C318 172 341 202 340 246C339 288 306 315 268 315Z' }),
+  ]);
+}
+
+/// The theme control every site and product uses: System (the default,
+/// following the operating system), Light or Dark. `onChange(preference)`
+/// normally calls setThemePreference from theme.js.
+function ThemeSwitch(props) {
+  const id = idPart(props.id || 'stack-theme');
+  return node('div', { class: cx('stack-theme-switch', props.className), ...passthrough(props.attrs) }, [
+    node('label', { class: 'stack-visually-hidden', for: id }, props.label || 'Theme'),
+    node('select', { class: 'stack-theme-switch__control', id, 'data-stack-theme-control': '' },
+      THEME_OPTIONS.map((option) => node('option', {
+        value: option.value, ...(option.value === (props.preference || 'system') ? { selected: true } : {}),
+      }, option.label)), props.onChange ? { change: (event) => props.onChange(event.target.value) } : undefined),
+  ]);
+}
+
+const productOf = (props) => (props.product ? { ...(portfolioProduct(props.product.id) || {}), ...props.product } : null);
+
+/// Header for a company or product website. The product's identity leads; a
+/// product site also carries "A Boundry product" linking to boundry.company.
+/// Navigation is ordinary links (it works without JavaScript) and wraps into
+/// a scrollable row on narrow screens instead of hiding behind a menu.
+function SiteHeader(props) {
+  const company = PORTFOLIO.company;
+  const product = productOf(props);
+  const name = product ? product.name : company.name;
+  const homeHref = present(props.homeHref) ? props.homeHref : '/';
+  return node('header', {
+    class: cx('stack-site-header', props.className),
+    ...(product && present(product.id) ? { 'data-stack-product': product.id } : {}),
+    ...passthrough(props.attrs),
+  }, [
+    node('a', { class: 'stack-site-header__skip', href: `#${idPart(props.mainId || 'main')}` }, props.skipLabel || 'Skip to content'),
+    node('div', { class: 'stack-site-header__inner' }, [
+      node('div', { class: 'stack-site-header__identity' }, [
+        node('a', { class: 'stack-site-header__home', href: homeHref, 'aria-label': `${name} home` }, [
+          props.logo ? node('span', { class: 'stack-site-header__logo' }, props.logo)
+            : product ? node('span', { class: 'stack-site-header__product-mark', 'aria-hidden': 'true' }, product.mark || name.slice(0, 2))
+              : BrandMark({ className: 'stack-site-header__logo', idPrefix: `${idPart(props.mainId || 'main')}-mark` }),
+          node('span', { class: 'stack-site-header__name' }, name),
+        ]),
+        product ? node('a', { class: 'stack-site-header__family', href: company.href }, ['A ', company.name, ' product']) : null,
+      ]),
+      (props.navigation || []).length ? node('nav', { class: 'stack-site-header__nav', 'aria-label': props.navigationLabel || 'Main' },
+        node('ul', { class: 'stack-site-header__nav-list' }, props.navigation.map((item) => node('li', {}, node('a', {
+          class: 'stack-site-header__nav-item',
+          href: item.href,
+          ...(item.current ? { 'aria-current': 'page' } : {}),
+          ...passthrough(item.attrs),
+        }, item.label))))) : null,
+      node('div', { class: 'stack-site-header__end' }, [
+        props.theme ? ThemeSwitch({ id: `${idPart(props.mainId || 'main')}-theme`, preference: props.theme.preference, onChange: props.theme.onChange }) : null,
+        props.actions || null,
+      ]),
+    ]),
+  ]);
+}
+
+/// Footer for a company or product website: the product's own link columns,
+/// then the Boundry family — every product, the current one marked, and a
+/// link to boundry.company — and the legal line.
+function SiteFooter(props) {
+  const company = PORTFOLIO.company;
+  const product = productOf(props);
+  const columns = props.columns || [];
+  const year = present(props.year) ? props.year : null;
+  const owner = present(props.owner) ? props.owner : company.name;
+  return node('footer', {
+    class: cx('stack-site-footer', props.className),
+    ...(product && present(product.id) ? { 'data-stack-product': product.id } : {}),
+    ...passthrough(props.attrs),
+  }, node('div', { class: 'stack-site-footer__inner' }, [
+    node('div', { class: 'stack-site-footer__top' }, [
+      node('div', { class: 'stack-site-footer__about' }, [
+        node('p', { class: 'stack-site-footer__name' }, product ? product.name : company.name),
+        present(props.tagline) ? node('p', { class: 'stack-site-footer__tagline' }, props.tagline) : null,
+      ]),
+      columns.map((column) => node('nav', { class: 'stack-site-footer__column', 'aria-label': column.title }, [
+        node('p', { class: 'stack-site-footer__heading' }, column.title),
+        node('ul', { class: 'stack-site-footer__list' }, (column.links || []).map((link) => node('li', {}, node('a', {
+          class: 'stack-site-footer__link', href: link.href, ...passthrough(link.attrs),
+        }, link.label)))),
+      ])),
+    ]),
+    node('nav', { class: 'stack-site-footer__family', 'aria-label': `${company.name} products` }, [
+      node('a', { class: 'stack-site-footer__company', href: company.href }, [
+        BrandMark({ className: 'stack-site-footer__mark', idPrefix: `${idPart(props.id || 'stack-footer')}-mark` }),
+        node('span', {}, product ? company.family : `${company.name} — ${company.tagline}`),
+      ]),
+      node('ul', { class: 'stack-site-footer__products' }, PORTFOLIO.products.map((entry) => node('li', {
+        'data-stack-product': entry.id,
+      }, node('a', {
+        class: 'stack-site-footer__product',
+        href: entry.href,
+        ...(product && product.id === entry.id ? { 'aria-current': 'true' } : {}),
+      }, [
+        node('span', { class: 'stack-site-footer__product-name' }, entry.name),
+        node('span', { class: 'stack-site-footer__product-category' }, entry.category),
+      ])))),
+    ]),
+    node('p', { class: 'stack-site-footer__legal' }, [
+      `© ${year ? `${year} ` : ''}${owner}`,
+      product ? [' · ', product.name, ' is a ', node('a', { href: company.href }, `${company.name} product`)] : null,
+      props.legal ? [' · ', props.legal] : null,
+    ]),
+  ]));
+}
+
 const COMPONENTS = Object.freeze({
   Breadcrumbs, Tabs, TabPanel, DataTable, FilterBar, Pagination, Shell,
   StatusIndicator, VerificationBadge, FreshnessLabel, Unavailable, Loading, EmptyState,
   ErrorPanel, MetadataList, ResourceIdentity, PageHeader, Button,
-  TextField, Select, Form, Dialog, ConfirmAction,
+  TextField, Select, Form, Dialog, ConfirmAction, EvidenceSummary,
+  Alert, Checkbox, FieldGroup, ActivityTimeline,
+  BrandMark, ThemeSwitch, SiteHeader, SiteFooter,
 });
 
 // ---- dom.js
@@ -975,23 +1400,27 @@ const COMPONENTS = Object.freeze({
 
 
 /// Render a view tree (or string, number, array, Node) to a DOM Node.
-function toDom(value, doc) {
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function toDom(value, doc, ns) {
   const d = doc || document;
   if (value === null || value === undefined || value === false || value === true) return d.createDocumentFragment();
   if (typeof value === 'string' || typeof value === 'number') return d.createTextNode(String(value));
   if (Array.isArray(value)) {
     const fragment = d.createDocumentFragment();
-    for (const item of value) fragment.appendChild(toDom(item, d));
+    for (const item of value) fragment.appendChild(toDom(item, d, ns));
     return fragment;
   }
   if (isTree(value)) {
-    const element = d.createElement(value.t);
+    // SVG (the brand mark) needs its namespace, inherited by its children.
+    const space = value.t === 'svg' ? SVG_NS : ns;
+    const element = space ? d.createElementNS(space, value.t) : d.createElement(value.t);
     for (const [key, attr] of Object.entries(value.a)) {
       if (attr === null || attr === undefined || attr === false) continue;
       element.setAttribute(key, attr === true ? '' : String(attr));
     }
     for (const [event, handler] of Object.entries(value.on || {})) element.addEventListener(event, handler);
-    for (const child of value.c) element.appendChild(toDom(child, d));
+    for (const child of value.c) element.appendChild(toDom(child, d, space));
     return element;
   }
   if (value && typeof value.nodeType === 'number') return value;
@@ -1184,5 +1613,5 @@ function formDialog(props, doc) {
   });
 }
 
-global.StackUI = Object.freeze({ version: "0.3.0", TONES, GLYPHS, OUTCOMES, OUTCOME_LABELS, VERIFICATION_STATES, FRESHNESS_STATES, CAPABILITY_STATES, humanize, fields, valuesOf, resolve, verification, verificationOf, freshnessOf, capability, isTree, formatTime, StatusIndicator, VerificationBadge, FreshnessLabel, Unavailable, Loading, EmptyState, ErrorPanel, MetadataList, ResourceIdentity, PageHeader, Button, Breadcrumbs, tabsKeydown, Tabs, TabPanel, DataTable, FilterBar, Pagination, THEME_OPTIONS, Shell, TextField, Select, Form, Dialog, ConfirmAction, COMPONENTS, toDom, focusMain, dom, openDialog, confirmAction, formDialog });
+global.StackUI = Object.freeze({ version: "0.6.1", TONES, GLYPHS, OUTCOMES, OUTCOME_LABELS, VERIFICATION_STATES, FRESHNESS_STATES, CAPABILITY_STATES, humanize, fields, valuesOf, resolve, verification, verificationOf, freshnessOf, capability, PORTFOLIO, portfolioProduct, isTree, formatTime, StatusIndicator, VerificationBadge, FreshnessLabel, Unavailable, Loading, EmptyState, ErrorPanel, MetadataList, ResourceIdentity, PageHeader, Button, Breadcrumbs, tabsKeydown, Tabs, TabPanel, DataTable, FilterBar, Pagination, THEME_OPTIONS, Shell, TextField, Select, Form, Dialog, ConfirmAction, EvidenceSummary, Alert, Checkbox, FieldGroup, ActivityTimeline, BrandMark, ThemeSwitch, SiteHeader, SiteFooter, COMPONENTS, toDom, focusMain, dom, openDialog, confirmAction, formDialog });
 })(typeof window !== 'undefined' ? window : globalThis);
