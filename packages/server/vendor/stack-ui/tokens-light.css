@@ -1,0 +1,144 @@
+/* @stack-ui/tokens — light theme only; generated from src/tokens.json; do not edit. */
+:root {
+  --stack-font-family-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --stack-font-family-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --stack-text-xs-size: 0.75rem;
+  --stack-text-xs-line: 1rem;
+  --stack-text-sm-size: 0.8125rem;
+  --stack-text-sm-line: 1.25rem;
+  --stack-text-md-size: 0.875rem;
+  --stack-text-md-line: 1.375rem;
+  --stack-text-lg-size: 1rem;
+  --stack-text-lg-line: 1.5rem;
+  --stack-text-xl-size: 1.25rem;
+  --stack-text-xl-line: 1.75rem;
+  --stack-text-2xl-size: 1.5rem;
+  --stack-text-2xl-line: 2rem;
+  --stack-text-3xl-size: 1.875rem;
+  --stack-text-3xl-line: 2.375rem;
+  --stack-text-4xl-size: 2.5rem;
+  --stack-text-4xl-line: 3rem;
+  --stack-text-display-size: clamp(2.25rem, 1.5rem + 3vw, 3.75rem);
+  --stack-text-display-line: 1.08;
+  --stack-font-weight-regular: 400;
+  --stack-font-weight-medium: 500;
+  --stack-font-weight-semibold: 600;
+  --stack-font-weight-bold: 700;
+  --stack-letter-spacing-tight: -0.02em;
+  --stack-space-0: 0;
+  --stack-space-1: 4px;
+  --stack-space-2: 8px;
+  --stack-space-3: 12px;
+  --stack-space-4: 16px;
+  --stack-space-5: 20px;
+  --stack-space-6: 24px;
+  --stack-space-8: 32px;
+  --stack-space-10: 40px;
+  --stack-space-12: 48px;
+  --stack-space-16: 64px;
+  --stack-space-20: 80px;
+  --stack-space-24: 96px;
+  --stack-size-control-sm: 32px;
+  --stack-size-control-md: 36px;
+  --stack-size-control-lg: 44px;
+  --stack-size-icon-sm: 14px;
+  --stack-size-icon-md: 16px;
+  --stack-radius-sm: 4px;
+  --stack-radius-md: 6px;
+  --stack-radius-lg: 10px;
+  --stack-radius-pill: 999px;
+  --stack-border-width-thin: 1px;
+  --stack-border-width-thick: 2px;
+  --stack-focus-ring-width: 2px;
+  --stack-focus-ring-offset: 2px;
+  --stack-z-sticky: 10;
+  --stack-z-dropdown: 20;
+  --stack-z-overlay: 30;
+  --stack-z-toast: 40;
+  --stack-motion-duration-fast: 120ms;
+  --stack-motion-duration-base: 200ms;
+  --stack-motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --stack-size-content-max: 1180px;
+  --stack-size-prose-max: 68ch;
+  --stack-color-bg-canvas: #f6f7f9;
+  --stack-color-bg-surface: #ffffff;
+  --stack-color-bg-raised: #ffffff;
+  --stack-color-bg-sunken: #eef0f3;
+  --stack-color-bg-overlay: rgba(15, 18, 24, 0.48);
+  --stack-color-bg-code: #f0f2f5;
+  --stack-color-text-default: #16181d;
+  --stack-color-text-muted: #4b5260;
+  --stack-color-text-subtle: #5f6673;
+  --stack-color-text-inverse: #ffffff;
+  --stack-color-text-link: #0a55d6;
+  --stack-color-text-on-accent: #ffffff;
+  --stack-color-border-default: #d9dde3;
+  --stack-color-border-strong: #7c8492;
+  --stack-color-border-subtle: #e8ebef;
+  --stack-focus-ring-color: #0a5ce8;
+  --stack-color-action-primary-bg: #0a5ce8;
+  --stack-color-action-primary-fg: #ffffff;
+  --stack-color-action-primary-bg-hover: #084dc4;
+  --stack-color-action-primary-bg-active: #063fa3;
+  --stack-color-action-secondary-bg: #ffffff;
+  --stack-color-action-secondary-fg: #16181d;
+  --stack-color-action-secondary-bg-hover: #eef0f3;
+  --stack-color-action-secondary-bg-active: #e2e5ea;
+  --stack-color-action-danger-bg: #c42b2b;
+  --stack-color-action-danger-fg: #ffffff;
+  --stack-color-action-danger-bg-hover: #a82323;
+  --stack-color-action-danger-bg-active: #8c1d1d;
+  --stack-color-status-positive-fg: #136b3a;
+  --stack-color-status-positive-bg: #e8f5ee;
+  --stack-color-status-positive-border: #9fd3b4;
+  --stack-color-status-positive-glyph: #1a7f45;
+  --stack-color-status-progress-fg: #1f4fb8;
+  --stack-color-status-progress-bg: #eaf0fd;
+  --stack-color-status-progress-border: #b9cbf3;
+  --stack-color-status-progress-glyph: #2f5bd8;
+  --stack-color-status-attention-fg: #734700;
+  --stack-color-status-attention-bg: #fdf3e1;
+  --stack-color-status-attention-border: #ecc77f;
+  --stack-color-status-attention-glyph: #a26400;
+  --stack-color-status-critical-fg: #a32020;
+  --stack-color-status-critical-bg: #fdecec;
+  --stack-color-status-critical-border: #f0b0b0;
+  --stack-color-status-critical-glyph: #c42b2b;
+  --stack-color-status-neutral-fg: #4b5260;
+  --stack-color-status-neutral-bg: #eef0f3;
+  --stack-color-status-neutral-border: #cdd2d9;
+  --stack-color-status-neutral-glyph: #6b7280;
+  --stack-color-status-unknown-fg: #55468a;
+  --stack-color-status-unknown-bg: #f1eef8;
+  --stack-color-status-unknown-border: #cdc4e8;
+  --stack-color-status-unknown-glyph: #7262ad;
+  --stack-color-evidence-verified-fg: #0d5c4a;
+  --stack-color-evidence-verified-bg: #e4f4ef;
+  --stack-color-evidence-verified-border: #93d1c0;
+  --stack-color-evidence-verified-glyph: #11806a;
+  --stack-color-evidence-unverified-fg: #4b5260;
+  --stack-color-evidence-unverified-bg: #eef0f3;
+  --stack-color-evidence-unverified-border: #cdd2d9;
+  --stack-color-evidence-unverified-glyph: #6b7280;
+  --stack-color-notice-info-fg: #1f4fb8;
+  --stack-color-notice-info-bg: #eaf0fd;
+  --stack-color-notice-info-border: #b9cbf3;
+  --stack-shadow-raised: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --stack-shadow-overlay: 0 12px 32px rgba(16, 24, 40, 0.18);
+  --stack-brand-ink: #0b1538;
+  --stack-brand-accent: #0a5ce8;
+  --stack-brand-mark-start: #0b1538;
+  --stack-brand-mark-end: #0a64ff;
+  --stack-product-accent: #0a5ce8;
+  --stack-product-accent-fg: #ffffff;
+}
+
+[data-stack-product="feltdb"] { --stack-product-accent: #18754a; --stack-product-accent-fg: #ffffff; }
+[data-stack-product="appport"] { --stack-product-accent: #2f6584; --stack-product-accent-fg: #ffffff; }
+[data-stack-product="appboundry"] { --stack-product-accent: #6a3fd0; --stack-product-accent-fg: #ffffff; }
+[data-stack-product="authboundry"] { --stack-product-accent: #8a4b36; --stack-product-accent-fg: #ffffff; }
+[data-stack-product="feltkit"] { --stack-product-accent: #0b7f6e; --stack-product-accent-fg: #ffffff; }
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --stack-motion-duration-fast: 0ms; --stack-motion-duration-base: 0ms; }
+}

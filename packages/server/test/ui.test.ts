@@ -57,6 +57,8 @@ describe('discovery and pages', () => {
       const [sum, file] = line.split(/\s+/);
       expect(createHash('sha256').update(readFileSync(path.join(dir, file!))).digest('hex'), file).toBe(sum);
     }
+    // The release AppPort Services 0.15 renders its management shell with.
+    expect(readFileSync(path.join(dir, 'VERSION'), 'utf8').trim()).toBe('0.6.1');
   });
 });
 
