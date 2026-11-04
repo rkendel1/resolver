@@ -223,6 +223,8 @@ unpublished version.
 
 ### P3 — Authorization through the gateway (Decision A)
 
+> **Implemented** (`RESOLVER_GATEWAY_CAPABILITIES`, `GrantAuthorizer.authorize`; test `gateway-authorization.test.ts`).
+
 - **Scope:**
   - `GrantAuthorizer.authorize` answers `resolver.*` through the capability→action map;
   - `resolver.reveal` declared;
