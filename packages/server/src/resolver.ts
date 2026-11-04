@@ -4,7 +4,7 @@
  */
 
 import { EventEmitter } from 'node:events';
-import type { AppPortServices, SecretCustody, VerifiedPrincipal } from '@appport/services';
+import type { AppPortServices, VerifiedPrincipal } from '@appport/services';
 import { formatCredentialRef, MAX_CREDENTIAL_VALUE_LENGTH } from '@appport/services';
 import {
   checkBinding,
@@ -36,7 +36,7 @@ import {
 import { GrantAuthorizer } from './authorizer.js';
 import { referenceId, type ChangeRow, type ReferenceRecord, type ResolverStore, type RevisionRecord } from './store.js';
 import { checkSchema, checkTargets, type TargetCheckOptions } from './targets.js';
-import { isVersionedCustody, VaultError } from './vault.js';
+import { requireVersionedCustody, VaultError, type VersionedCustody } from './vault.js';
 
 export type ResolverErrorCode = 'INVALID_INPUT' | 'NOT_FOUND' | 'FORBIDDEN' | 'CONFLICT' | 'INTERNAL_ERROR';
 
@@ -57,7 +57,8 @@ const MAX_TTL_SECONDS = 86_400;
 export interface ResolverOptions {
   store: ResolverStore;
   authorizer: GrantAuthorizer;
-  custody: SecretCustody<string>;
+  /** Must keep versions (`withSecretVersion`); refused otherwise. */
+  custody: VersionedCustody;
   /** AppPort Services on the same FeltDB: API keys and principals. */
   services: AppPortServices;
   /** Target checks, including the outbound policy agent verification must go through. */
@@ -70,7 +71,7 @@ type Principal = VerifiedPrincipal;
 export class Resolver {
   readonly #store: ResolverStore;
   readonly #authorizer: GrantAuthorizer;
-  readonly #custody: SecretCustody<string>;
+  readonly #custody: VersionedCustody;
   readonly #services: AppPortServices;
   readonly #targets: Omit<TargetCheckOptions, 'lookup'>;
   readonly #now: () => Date;
@@ -86,6 +87,7 @@ export class Resolver {
   constructor(options: ResolverOptions) {
     this.#store = options.store;
     this.#authorizer = options.authorizer;
+    requireVersionedCustody(options.custody);
     this.#custody = options.custody;
     this.#services = options.services;
     this.#targets = options.targets;
@@ -366,7 +368,7 @@ export class Resolver {
 
   async #discard(principal: Principal, ref: string, binding: Binding) {
     const custody = this.#custody;
-    if (!isVersionedCustody(custody) || !custody.discardVersion) return;
+    if (!custody.discardVersion) return;
     const version = (binding.targets[0]?.value as SecretTarget | undefined)?.version;
     if (version === undefined) return;
     await custody.discardVersion({ reference: { secretId: referenceId(principal.tenantId, ref), tenantId: principal.tenantId }, version });
@@ -520,15 +522,7 @@ export class Resolver {
     };
     let value: string;
     try {
-      if (isVersionedCustody(this.#custody)) {
-        value = await this.#custody.withSecretVersion({ ...input, version: target.version }, (s) => s.value);
-      } else {
-        // A custody without versions can only reveal the version it holds now.
-        value = await this.#custody.withSecret(input, (s) => {
-          if (s.version !== target.version) throw new VaultError('VERSION_MISSING', 'custody holds a different version');
-          return s.value;
-        });
-      }
+      value = await this.#custody.withSecretVersion({ ...input, version: target.version }, (s) => s.value);
     } catch (error) {
       if (error instanceof VaultError && error.code === 'REVOKED') throw new ResolverError('NOT_FOUND', REASONS.revoked, `${ref} material was removed`);
       throw new ResolverError('INTERNAL_ERROR', REASONS.custody, `the secret for ${ref} could not be opened`);

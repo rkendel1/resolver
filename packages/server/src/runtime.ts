@@ -21,7 +21,7 @@ import { Resolver } from './resolver.js';
 import { ResolverStore } from './store.js';
 import { RevisionSync, type SyncOptions } from './sync.js';
 import type { TargetCheckOptions } from './targets.js';
-import { createVault, isVersionedCustody, type Vault } from './vault.js';
+import { createVault, requireVersionedCustody, type Vault, type VersionedCustody } from './vault.js';
 import { createManagementHandler, type ManagementOptions } from './ui/router.js';
 
 export interface ResolverRuntimeOptions {
@@ -43,8 +43,8 @@ export interface ResolverRuntimeOptions {
    * state opened `shared`) and custody that keeps versions (the vault, on a directory every instance sees).
    */
   multiInstance?: boolean;
-  /** Secret custody. Default: the encrypted vault in `vaultDirectory` under `vaultKey`. */
-  custody?: SecretCustody<string>;
+  /** Secret custody. Default: the encrypted vault in `vaultDirectory` under `vaultKey`. It must keep versions (`VersionedCustody`); a latest-only custody is refused at startup. */
+  custody?: VersionedCustody;
   vaultDirectory?: string;
   /** 32 bytes: the key new secret versions are sealed with. Required unless `custody` is given. */
   vaultKey?: Buffer;
@@ -93,7 +93,7 @@ export interface ResolverRuntime {
   outbound: OutboundPolicy;
   /** The vault, when the runtime created one (not when `custody` was given). */
   vault: Vault | undefined;
-  custody: SecretCustody<string>;
+  custody: VersionedCustody;
   log: Logger;
   instanceId: string;
   /** A principal with every permission in `tenantId`, for bootstrap and embedding. Never leaves this process. */
@@ -119,14 +119,14 @@ function openState(state: ResolverRuntimeOptions['state']): { db: StateFirstDB; 
   };
 }
 
-function checkMultiInstance(options: ResolverRuntimeOptions, custody: SecretCustody<string>) {
+function checkMultiInstance(options: ResolverRuntimeOptions, custody: VersionedCustody) {
   if (!options.multiInstance) return;
   const state = options.state;
   if ('memory' in state) throw new Error('multiInstance: memory state is private to one process; use a FeltDB server');
   if ('local' in state && !state.shared) throw new Error('multiInstance: local state must be opened with shared: true (one host only); across hosts use a FeltDB server');
   // A custody that keeps one version cannot keep a committed revision revealable when two instances
   // write the same secret at once (only one commit wins, but both stored).
-  if (!isVersionedCustody(custody) || !custody.discardVersion) {
+  if (!custody.discardVersion) {
     throw new Error('multiInstance: secret custody must keep versions (withSecretVersion, discardVersion), like the vault');
   }
 }
@@ -156,6 +156,7 @@ export async function createResolverRuntime(options: ResolverRuntimeOptions): Pr
     vault = createVault({ directory, key: options.vaultKey, ...(options.previousVaultKeys ? { previousKeys: options.previousVaultKeys } : {}), ...(options.now ? { now: options.now } : {}) });
     custody = vault;
   }
+  requireVersionedCustody(custody);
   checkMultiInstance(options, custody);
 
   const { db, owned } = openState(options.state);
