@@ -74,7 +74,7 @@ query on the gateway. `authorize` throws on denial and records refusal evidence
 |---|---|
 | Principal | The gateway passes `subject: { kind: principalType, id: principalId }`, `context.verified_by`, `tenant_id` and `credential_id`. These are the fields `decide` and `isOperator` use. Expressible. |
 | Resource | `ServiceResource` has `id` and `attributes`. The request carries `resource.uri = appport://<app>/tenants/<t>/<type>/<encodeURIComponent(id)>` plus the attributes. A ref can travel as `{ type: 'reference', id: ref, attributes: { ref } }`. Expressible. |
-| Action | One capability per action-bearing operation. `resolve`, `history`, `put`, `rollback`, `revoke`, `grant`, `ungrant`, `grants` and `keys.*` map one-to-one. **Reveal has no capability today**: it is a flag on `resolver.resolve`. It needs its own declared capability (`resolver.reveal`), authorized as a second step for the same ref, as `#reveal` does now. |
+| Action | One capability per action-bearing operation. `resolve`, `history`, `put`, `rollback`, `revoke`, `grant`, `ungrant` and `grants` map one-to-one. `resolver.keys.*` are not declared: key management is the host's `apikeys.*` on `api_key`, which `GrantAuthorizer.authorize` already answers (admin grant or operator). **Reveal has no capability today**: it is a flag on `resolver.resolve`. It needs its own declared capability (`resolver.reveal`), authorized as a second step for the same ref, as `#reveal` does now. |
 | Tenancy | The gateway refuses a principal whose tenant differs from the resource's (`assertOwnership`), which matches "a grant never crosses tenants". |
 | List, watch, dependents | **Not expressible as gateway calls.** Filtering rows through `gateway.authorize` would throw on each hidden row and write a refusal record for it, which turns visibility filtering into recorded denied effects. These must keep calling the same policy's `decide(read)` directly. The call-level capability (`resolver.list`, `resolver.watch`) must then be **allowed for any principal of the tenant**, or a caller with no grants would get `403` where it gets `[]` today. |
 | Revocation | Unchanged if the policy store stays `resolver_grants`: grant removal still writes the authority record. If the grants lived in a host policy, Resolver could not see their removal, and tests 4–5 would degrade to the TTL bound of test 6. |
@@ -244,7 +244,7 @@ unpublished version.
 
 - **Scope:**
   - `resolverExtension({ custody })` built with `defineServicesExtension`: id `resolver`, the
-    `resolver.*` capabilities including `resolver.reveal`;
+    `resolver.*` capabilities except `resolver.keys.*`, plus `resolver.reveal`;
   - `routes(router, { db, gateway })` serving today's `/_resolver/*` JSON API at
     `/v1/extensions/resolver/*`;
   - each handler runs `gateway.execute(...)` around the existing `Resolver` method;
