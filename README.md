@@ -93,7 +93,9 @@ holds. If the resolver is unreachable, the client serves the last known good res
 - **Secrets.** `read` shows a secret's metadata (custody pointer and version); only `reveal` returns
   material, and every reveal is recorded (who, revision, custody version, decision id), never the material.
   Material lives in the vault, sealed per version with the tenant, secret and version as authenticated data.
-  The vault implements AppPort Services' `SecretCustody`; plug in a KMS-backed custody the same way.
+  The vault implements AppPort Services' `SecretCustody` and Resolver's `VersionedCustody`. A KMS-backed
+  custody plugs in the same way. It must keep immutable versions (`withSecretVersion`), so a pinned revision
+  always reveals the material it was written with. A latest-only custody is refused at startup.
 - **Revocation is total.** A revoked reference fails every resolution, pinned or not; revoking a secret
   destroys its material (if custody fails, revoking again retries the destruction). A revoked name is never
   reused. The response lists the active models that still name a revoked credential (`dependents`).

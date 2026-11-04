@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Versioned custody is required
+
+`createResolverRuntime` and `new Resolver()` refuse a custody without `withSecretVersion` (Resolver's
+`VersionedCustody`), with an error naming it. The latest-only fallback is removed: before, a custody
+without versions revealed whatever it held now, if its version number matched the revision's. A version
+number from a generic custody need not identify material (an environment-variable custody reports
+every value as version 1), so that check could pair a revision with another revision's material.
+
+- The vault, the default, is versioned; nothing changes for it. `multiInstance` still also requires
+  `discardVersion`.
+- A deployment configured with a custom latest-only `custody` no longer starts. Give it versions, or
+  use the vault.
+- `requireVersionedCustody()` is exported. `ResolverRuntimeOptions.custody` and
+  `ResolverOptions.custody` are typed `VersionedCustody`.
+- Tests: `packages/server/test/custody-versions.test.ts`. Refusal at startup and in the constructor (both
+  fail on the old code); revisions 1, 2 and 3 of one secret each reveal exactly their own value after
+  two later stores. The concurrent-writes test in `audit.test.ts` now runs on the versioned vault; it
+  used to exercise the latest-only path this removes.
+
 ## 0.2.0 — `@appport/resolver-client`, `@appport/resolver`
 
 Adds one client API, and moves the server onto the current AppPort Services and FeltDB. No change
