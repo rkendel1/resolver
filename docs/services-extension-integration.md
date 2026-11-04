@@ -1,6 +1,6 @@
 # Resolver on AppPort Services extensions: decisions and plan
 
-Status: **proposal for review.** Nothing here is implemented. It refines
+Status: **decisions A and B accepted** (after resolver#5). P0 is done: `@appport/services` 0.15.0 is published. Nothing else here is implemented yet. It refines
 [appport-services-integration.md](./appport-services-integration.md) (resolver#5) now that the generic
 extension mechanism exists (rkendel1/appport-services#43, `a3fabd5`).
 
