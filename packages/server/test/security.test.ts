@@ -58,6 +58,26 @@ describe('authentication and authorization', () => {
     await fresh.close();
   });
 
+  it('stops handing out cached secret material once reveal is removed, while read remains', async () => {
+    // Seen from FeltKit: the client kept serving a revealed credential from its cache after the key's
+    // reveal grant was removed, until the reference's TTL, because only read was rechecked.
+    await h.admin.put({ ref: 'ref://prod/llm/revocable-key', kind: 'secret', secret: 'sk-revocable', expectedRevision: 0, ttlSeconds: 300 });
+    await h.admin.put({ ref: 'ref://prod/chat/revocable', kind: 'model', binding: { value: { provider: 'openai', model: 'gpt-4o', credential: 'ref://prod/llm/revocable-key' } }, expectedRevision: 0, ttlSeconds: 300 });
+    const { client, principal } = await h.clientWith([
+      [['read'], 'ref://prod/chat/revocable'],
+      [['read'], 'ref://prod/llm/revocable-key'],
+      [['reveal'], 'ref://prod/llm/revocable-key'],
+    ]);
+    expect((await client.model('ref://prod/chat/revocable')).apiKey).toBe('sk-revocable');
+    const { grants } = await h.admin.grants();
+    const reveal = grants.find((g) => g.subject === principal && g.actions.includes('reveal'))!;
+    await h.admin.ungrant(reveal.id);
+    // The authority change ends the client's stream; the next use re-reveals with current authority.
+    const refused = await waitFor(async () => ((await code(client.model('ref://prod/chat/revocable'))) === 'FORBIDDEN' ? true : undefined), 5000);
+    expect(refused).toBe(true);
+    expect(await client.get('ref://prod/chat/revocable')).toMatchObject({ provider: 'openai' }); // read still works
+  });
+
   it('keeps tenants apart: names, values, lists and change notifications', async () => {
     const other = h.runtime.operator('globex');
     const key = await h.runtime.resolver.createKey(other, { name: 'globex-admin' });

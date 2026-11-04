@@ -11,7 +11,9 @@
  *   target, with no request per call.
  * - If the resolver is unreachable, the last known good result is served for at most `maxStaleSeconds`.
  *   Authoritative answers (revoked, forbidden, not found) are never papered over: they evict the cache.
- * - Secret material is held in memory only, for the reference's TTL, and never written anywhere.
+ * - Secret material is held in memory only, for the reference's TTL, and never written anywhere. It is
+ *   dropped whenever cached results are revalidated (a reconnect, or the resolver ending the stream
+ *   because this key's authority shrank), so removing `reveal` stops it at the next use.
  */
 
 import { AppPort, type AppPortClient } from '@appport/sdk';
@@ -292,6 +294,9 @@ export class ResolverClient {
   #invalidateAll() {
     this.#epoch += 1;
     for (const entry of this.#cache.values()) entry.invalid = true;
+    // Secret material is rechecked only by revealing it again: a revalidation that kept it would let a
+    // client that lost `reveal` (but kept `read`) go on handing out material until the TTL.
+    this.#secrets.clear();
   }
 
   #fetch(ref: string, extra: { revision?: number }): Promise<ResolveResult> {
