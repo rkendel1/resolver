@@ -76,6 +76,15 @@ interface CachedSecret {
   fetchedAt: number;
 }
 
+/** A revealed secret and the revision it belongs to (`ResolverClient.revealSecret`). */
+export interface RevealedSecret {
+  ref: string;
+  /** The reference's revision whose material `value` is. */
+  revision: number;
+  /** The material. Pass it to the call that needs it; never log, store or return it. */
+  value: string;
+}
+
 export interface ResolvedModel extends ModelTarget {
   /** The provider credential, when the model names one and this client may reveal it. */
   apiKey?: string;
@@ -140,6 +149,19 @@ export class ResolverClient {
   /** Secret material for a `secret` reference. Needs a `reveal` grant. Held in memory for the TTL only. */
   async secret(ref: string): Promise<string> {
     return (await this.#secretWithRevision(ref)).value;
+  }
+
+  /**
+   * Secret material together with the revision it belongs to: one consistent pair, for a receipt that
+   * must say exactly which credential was used. Both come from one resolver answer (the resolver reads
+   * the reference once and reveals the custody version that revision binds), and are cached and
+   * invalidated together, as `secret()` is. Needs a `reveal` grant.
+   *
+   * Record `ref` and `revision`; never `value`.
+   */
+  async revealSecret(ref: string): Promise<RevealedSecret> {
+    const { value, revision } = await this.#secretWithRevision(ref);
+    return { ref, revision, value };
   }
 
   async #secretWithRevision(ref: string): Promise<CachedSecret> {
