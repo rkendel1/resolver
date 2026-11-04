@@ -36,7 +36,9 @@ Status: **plan only.** Nothing here is implemented, published or migrated. Code 
 | **AppPort** | capability discovery and invocation authority for application capabilities | resolution |
 | **FeltKit** | composing the host: which Resolver mode, where its pages appear, deploy settings | a second registry, vault or permission system |
 
-`resolver.*` capabilities are not added to Services' gateway manifest. Resolver authorizes them with its own grants; that is its responsibility. Services hosts the *experience*, and the identity adapter supplies *who* is calling.
+`resolver.*` capabilities are not added to Services' gateway manifest. Resolver authorizes them with its own grants; that is its responsibility.
+
+> **Revised in [services-extension-integration.md](./services-extension-integration.md), Decision A (proposed):** with the generic extension mechanism (appport-services#43), `resolver.*` capabilities join the host gateway as `invocable: false` declarations, so pages are gated and effects recorded by the host. Resolver's grants (`resolver_grants`, `GrantAuthorizer`) remain the only policy that decides them. Services hosts the *experience*, and the identity adapter supplies *who* is calling.
 
 ## 3. Tenancy
 
@@ -132,6 +134,8 @@ Resolver ships `@appport/resolver/management-extension`, built from its existing
   - backup and restore preserve all of it.
 
 ## 10. Exact changes, in order
+
+> Superseded by the PR-by-PR plan in [services-extension-integration.md](./services-extension-integration.md). Step 2 below is appport-services#43.
 
 1. **Resolver: converge dependencies (E1).** `package.json`, the lockfile, `packages/server/vendor/stack-ui` → 0.6.1, the UI pages. Nothing else; full plus multi-instance suites.
 2. **AppPort Services: management extensions.**
