@@ -46,6 +46,20 @@ Tests:
 
 Upgrade: `npm install @appport/resolver-client@0.2.0`.
 
+### The API-key verifier key is applied (`RESOLVER_VERIFIER_KEY`)
+
+`createResolverRuntime` passed `verifierKey` to AppPort Services under a name Services does not read
+(it reads `apiKeyVerifierKey`), and an `as never` cast hid the mismatch. So the configured verifier
+key never took effect: every API key was stored as a plain `scrypt$…` verifier, not the
+`hmac-scrypt$…` verifier keyed by the server-held secret that the docs describe.
+
+- New keys are stored as `hmac-scrypt$…` under the configured key. They verify only with that key,
+  which makes the docs' statement true: losing `RESOLVER_VERIFIER_KEY` invalidates them.
+- Keys created before this release (`scrypt$…`) keep working unchanged. Services verifies both
+  forms, so no key has to be reissued. To move an existing key to the keyed form, rotate it.
+- The cast is gone, so the options object is type-checked again.
+- Test: `packages/server/test/verifier-key.test.ts`. It fails on the old code.
+
 ## 0.1.1 — `@appport/resolver-client`, `@appport/resolver` (prepared, not published; released as part of 0.2.0)
 
 Security fix in the client. No API change. `@appport/resolver-core` is unchanged (0.1.0).
