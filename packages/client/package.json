@@ -1,6 +1,6 @@
 {
   "name": "@appport/resolver-client",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Resolve references at run time with live updates, caching, last-known-good fallback and traffic steering.",
   "type": "module",
   "main": "./dist/index.js",

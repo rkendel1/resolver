@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+_Next release: `@appport/resolver` 0.3.0, `@appport/resolver-client` 0.2.1. `@appport/resolver-core` is unchanged (0.1.0)._
+
 ### Resolver's grants answer the host gateway for `resolver.*` (P3)
 
 `GrantAuthorizer.authorize`, the AuthBoundry contract a host gateway calls, now answers Resolver's own
