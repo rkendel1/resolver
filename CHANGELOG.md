@@ -2,7 +2,19 @@
 
 ## Unreleased
 
-_Next release: `@appport/resolver` 0.3.0, `@appport/resolver-client` 0.2.1. `@appport/resolver-core` is unchanged (0.1.0)._
+_Next release: `@appport/resolver` 0.3.1, `@appport/resolver-client` 0.2.2. `@appport/resolver-core` is unchanged (0.1.0)._
+
+### Current AppPort releases
+
+Both packages move to the current AppPort releases: `@appport/sdk` 1.6.0, `@appport/server` 1.3.0
+(per-connection event subscriptions), `@appport/core` 1.7.0 (no static Node imports on the
+server-internal path), `@appport/protocol` 1.4.1, `@appport/authorization` 1.1.0 (`NOT_FOUND` denials),
+`@appport/schema` 1.1.5. Applications that use `@appport/resolver-client` (FeltKit among them) no
+longer install a second, older copy of the AppPort server.
+
+## `@appport/resolver` 0.3.0, `@appport/resolver-client` 0.2.1
+
+_`@appport/resolver-core` is unchanged (0.1.0)._
 
 ### Resolver's grants answer the host gateway for `resolver.*` (P3)
 
