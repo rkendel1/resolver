@@ -253,8 +253,12 @@ Operations, each with its tests and limits:
 | Management pages | Stack design system (`@stack/ui` 0.3.0, vendored as AppPort Services does) |
 | The vault, the grant policy, the resolver service, the CLI, the management UI | `@appport/resolver` (this repository) |
 
-`@appport/services` 0.9.1 pins `@feltdb/core` 0.15.0; this workspace overrides it to 0.16.1 so one FeltDB
-instance serves both, and the tests exercise the AppPort Services paths the resolver uses on it.
+**Compatibility.** `@appport/resolver-client` depends on `@appport/sdk` `^1.7.0` and uses only `AppPort.discover`
+and the `AppPortClient` type; `@appport/resolver` pins the AppPort 1.7 release set (`@appport/sdk` 1.7.0,
+`@appport/server` 1.3.1, `@appport/protocol` 1.5.0, `@appport/services` 0.16.0). Installed beside `@feltdb/feltkit`,
+one copy of every `@appport/*` package resolves (`scripts/consumer-check.mjs` proves it on every CI run); an older
+client (0.2.2, `@appport/sdk` 1.6.0) installed two. This workspace overrides `@feltdb/core` so one FeltDB instance
+serves the resolver and `@appport/services` in the tests.
 
 ## Limits
 
