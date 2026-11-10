@@ -2,7 +2,36 @@
 
 ## Unreleased
 
-_Next release: `@appport/resolver` 0.3.1, `@appport/resolver-client` 0.2.2. `@appport/resolver-core` is unchanged (0.1.0)._
+_Next release: `@appport/resolver` 0.3.2, `@appport/resolver-client` 0.2.3. `@appport/resolver-core` is unchanged (0.1.0). Prepared, not published._
+
+### `@appport/resolver-client` follows the AppPort 1.7 release line
+
+`@appport/resolver-client` 0.2.2 pinned `@appport/sdk` 1.6.0. FeltKit, and this workspace's own server, had moved to
+`@appport/sdk` 1.7.0 (protocol 1.5.0, core 1.7.1, schema 1.1.6, authorization 1.1.1, server 1.3.1), so an application
+installing `@feltdb/feltkit` received two AppPort dependency graphs: two protocol modules, two sets of SDK types,
+feedback receipts digested by one copy that the other could not verify. FeltKit's exhaustive composition consumer gate
+(`scripts/matrix-consumer.mjs verify` in rkendel1/feltkit) found it; FeltKit's root npm override had hidden it inside
+that monorepo and cannot protect downstream consumers.
+
+- `@appport/resolver-client` depends on `@appport/sdk` `^1.7.0` (a caret range, so a 1.7.x or later 1.x SDK is one
+  copy with whatever installs beside it). It uses only `AppPort.discover` and the `AppPortClient` type, both unchanged
+  in 1.7 (verified: typecheck, the suite, and `packages/client/test/dependencies.test.ts`).
+- `@appport/resolver` moves to the same release set (`@appport/sdk` 1.7.0, `@appport/server` 1.3.1, `@appport/core`
+  1.7.1, `@appport/protocol` 1.5.0, `@appport/schema` 1.1.6, `@appport/authorization` 1.1.1, `@appport/services`
+  0.16.0, which requires protocol 1.5.0) and on `@appport/resolver-client` 0.2.3, so the server's own install is one
+  graph too. No server code changed.
+- Regression test `packages/client/test/dependencies.test.ts`: the range admits 1.7 and not 1.6; the resolved SDK is
+  1.7.0 or later with every package at the version it pins; the client, the SDK, core and the server resolve one
+  `@appport/protocol` module; the client imports only what the SDK exports.
+- `scripts/consumer-check.mjs` (run by CI): the packed client installed beside `@feltdb/feltkit` from the registry in an
+  empty project resolves one copy of every `@appport/*` package, the 1.7 line, no SDK nested under the client, and one
+  protocol module for FeltKit, the SDK and the client, through which an `appport.feedback/1` report validates with the
+  same digest.
+
+Nothing in the AppPort protocol or SDK changed; no overrides were added; the lockfile was regenerated.
+
+FeltKit: once 0.2.3 is published, FeltKit drops its root `overrides` for `@appport/resolver-client` and pins 0.2.3;
+until then its consumer gate stays red by design.
 
 ### Current AppPort releases
 

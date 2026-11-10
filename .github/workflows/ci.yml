@@ -14,6 +14,8 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      # The packed client beside @feltdb/feltkit in an empty project: one copy of every @appport/* package.
+      - run: node scripts/consumer-check.mjs
   browser:
     runs-on: ubuntu-latest
     steps:
