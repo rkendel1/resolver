@@ -43,8 +43,9 @@ import {
 } from '@appport/resolver-core';
 import { GrantAuthorizer, isOperator } from './authorizer.js';
 import { authorizationId, changeDigest, ed25519PublicKey, GovernanceError, policyFor, verifyAuthorization } from './governance.js';
-import { referenceId, signingKeyId, type ChangeRow, type CommitGovernance, type ReferenceRecord, type ResolverStore, type RevisionRecord } from './store.js';
+import { referenceId, signingKeyId, type ChangeRow, type CommitGovernance, type ConsumerRecord, type ReferenceRecord, type ResolverStore, type RevisionRecord } from './store.js';
 import { checkSchema, checkTargets, type TargetCheckOptions } from './targets.js';
+import type { ObservationRecorder, ResolutionOutcome } from './observe.js';
 import { requireVersionedCustody, VaultError, type VersionedCustody } from './vault.js';
 
 export type ResolverErrorCode = 'INVALID_INPUT' | 'NOT_FOUND' | 'FORBIDDEN' | 'CONFLICT' | 'INTERNAL_ERROR';
@@ -73,9 +74,16 @@ export interface ResolverOptions {
   /** Target checks, including the outbound policy agent verification must go through. */
   targets: Omit<TargetCheckOptions, 'lookup'>;
   now?: () => Date;
+  /** Records observed resolutions and asserted usage. Absent: nothing is recorded (embedding without it). */
+  observations?: ObservationRecorder;
+  /** A registration is live while its watch stream was seen within this many ms. Default 120 000. */
+  consumerGraceMs?: number;
 }
 
 type Principal = VerifiedPrincipal;
+
+/** How often an open watch stream refreshes its registration's `lastSeenAt`. */
+const CONSUMER_TOUCH_MS = 30_000;
 
 export class Resolver {
   readonly #store: ResolverStore;
@@ -84,6 +92,10 @@ export class Resolver {
   readonly #services: AppPortServices;
   readonly #targets: Omit<TargetCheckOptions, 'lookup'>;
   readonly #now: () => Date;
+  readonly #observations: ObservationRecorder | undefined;
+  readonly #consumerGraceMs: number;
+  /** Registrations confirmed to belong to a principal, so a resolution does not read the registration each time. */
+  readonly #knownConsumers = new Map<string, number>();
   readonly #changes = new EventEmitter();
   /**
    * Writes to one reference run one at a time in this process. A writer that loses the race then fails its
@@ -101,12 +113,58 @@ export class Resolver {
     this.#services = options.services;
     this.#targets = options.targets;
     this.#now = options.now ?? (() => new Date());
+    this.#observations = options.observations;
+    this.#consumerGraceMs = options.consumerGraceMs ?? 120_000;
     this.#changes.setMaxListeners(0);
   }
 
   // ---- reads ------------------------------------------------------------------------------------
 
+  /**
+   * Resolves, and records the resolution Resolver observed: the revision served (or the refusal), by which principal
+   * and registration. Recording happens after the answer is decided and never changes or delays it.
+   */
   async resolve(principal: Principal, input: ResolveInput): Promise<ResolveResult> {
+    if (!this.#observations) return this.#resolve(principal, input);
+    const consumer = await this.#ownConsumer(principal, input?.consumer);
+    try {
+      const result = await this.#resolve(principal, input);
+      this.#observe(principal, consumer, result.ref, result.revision, 'ok');
+      return result;
+    } catch (error) {
+      if (error instanceof ResolverError && isRef(input?.ref)) {
+        const outcome: ResolutionOutcome | null =
+          error.reason === REASONS.revoked ? 'revoked' : error.reason === REASONS.notFound ? 'not_found' : error.reason === REASONS.forbidden ? 'forbidden' : null;
+        if (outcome) this.#observe(principal, consumer, input.ref as RefName, outcome === 'revoked' ? Number(error.details['revision'] ?? 0) : 0, outcome);
+      }
+      throw error;
+    }
+  }
+
+  #observe(principal: Principal, consumer: string | undefined, ref: RefName, revision: number, outcome: ResolutionOutcome) {
+    try {
+      this.#observations!.resolution({ tenantId: principal.tenantId, principalId: principal.principalId, ...(consumer ? { consumer } : {}), ref, revision, outcome });
+    } catch {
+      // Never let recording affect the resolution.
+    }
+  }
+
+  /** The registration id, if it is the caller's own live registration; otherwise nothing (never trusted as given). */
+  async #ownConsumer(principal: Principal, id: unknown): Promise<string | undefined> {
+    if (typeof id !== 'string' || !id || id.length > 64) return undefined;
+    const cacheKey = `${principal.tenantId}\u0000${principal.principalId}\u0000${id}`;
+    const seen = this.#knownConsumers.get(cacheKey);
+    if (seen !== undefined && Date.now() - seen < 60_000) return id;
+    const row = await this.#store.consumer(id).catch(() => null);
+    if (!row || row.tenantId !== principal.tenantId || row.principalId !== principal.principalId || row.deregisteredAt) {
+      this.#knownConsumers.delete(cacheKey);
+      return undefined;
+    }
+    this.#knownConsumers.set(cacheKey, Date.now());
+    return id;
+  }
+
+  async #resolve(principal: Principal, input: ResolveInput): Promise<ResolveResult> {
     const ref = this.#ref(input.ref);
     await this.#require(principal, 'read', ref);
     const record = await this.#existing(principal.tenantId, ref);
@@ -200,6 +258,12 @@ export class Resolver {
     this.#changes.on('authority', shrank);
     const stop = () => wake?.();
     signal.addEventListener('abort', stop);
+    // An open stream is the registration's liveness: no second heartbeat protocol.
+    const consumer = await this.#ownConsumer(principal, input.consumer);
+    const touch = consumer ? () => void this.#touchConsumer(consumer).catch(() => undefined) : undefined;
+    touch?.();
+    const toucher = touch ? setInterval(touch, CONSUMER_TOUCH_MS) : undefined;
+    toucher?.unref();
     try {
       while (!signal.aborted && !ended) {
         const event = queue.shift();
@@ -215,7 +279,197 @@ export class Resolver {
       this.#changes.off('resync', end);
       this.#changes.off('authority', shrank);
       signal.removeEventListener('abort', stop);
+      if (toucher) clearInterval(toucher);
+      touch?.();
     }
+  }
+
+  // ---- consumers, usage and adoption --------------------------------------------------------------
+
+  async #touchConsumer(id: string): Promise<void> {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const row = await this.#store.consumer(id);
+      if (!row || row.deregisteredAt) return;
+      try {
+        await this.#store.saveConsumer({ ...row, lastSeenAt: this.#now().toISOString() }, false);
+        return;
+      } catch {
+        // A concurrent touch or update won; read again.
+      }
+    }
+  }
+
+  #consumerState(row: ConsumerRecord): 'live' | 'stale' | 'deregistered' {
+    if (row.deregisteredAt) return 'deregistered';
+    return this.#now().getTime() - Date.parse(row.lastSeenAt) <= this.#consumerGraceMs ? 'live' : 'stale';
+  }
+
+  async #dependencies(principal: Principal, input: unknown): Promise<ConsumerRecord['dependencies']> {
+    if (input === undefined) return [];
+    if (!Array.isArray(input) || input.length > 500) throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, 'dependencies must be a list of at most 500 { ref, contract? }');
+    const out: ConsumerRecord['dependencies'] = [];
+    const unreadable: string[] = [];
+    for (const item of input) {
+      const ref = (item as { ref?: unknown })?.ref;
+      const contract = (item as { contract?: unknown })?.contract;
+      if (!isRef(ref)) throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, 'each dependency names a ref://');
+      if (contract !== undefined && (typeof contract !== 'string' || contract.length > 200)) throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, 'a dependency contract is a string of at most 200 characters');
+      // A consumer cannot declare dependencies it may not read: no probing of names through declarations.
+      if (!(await this.#authorizer.decide(principal, 'read', ref)).allowed) unreadable.push(ref);
+      out.push({ ref: ref as RefName, ...(contract ? { contract } : {}) });
+    }
+    if (unreadable.length) throw new ResolverError('FORBIDDEN', REASONS.forbidden, `the caller may not read ${unreadable.length} declared dependenc${unreadable.length === 1 ? 'y' : 'ies'}`);
+    return out;
+  }
+
+  /** Registers a running consumer (asserted application, environment and instance; verified principal). */
+  async register(principal: Principal, input: { application: string; environment: string; instance?: string; dependencies?: Array<{ ref: string; contract?: string }> }) {
+    const text = (v: unknown, name: string) => {
+      if (typeof v !== 'string' || !/^[A-Za-z0-9._:@/-]{1,128}$/.test(v)) throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, `${name} must be 1 to 128 of A-Z a-z 0-9 . _ : @ / -`);
+      return v;
+    };
+    const at = this.#now().toISOString();
+    const row: ConsumerRecord = {
+      id: `con_${randomUUID().replaceAll('-', '').slice(0, 24)}`,
+      tenantId: principal.tenantId,
+      principalId: principal.principalId,
+      application: text(input.application, 'application'),
+      environment: text(input.environment, 'environment'),
+      instance: text(input.instance ?? 'default', 'instance'),
+      dependencies: await this.#dependencies(principal, input.dependencies),
+      registeredAt: at,
+      lastSeenAt: at,
+    };
+    await this.#store.saveConsumer(row, true);
+    return { registration: row.id, graceSeconds: Math.round(this.#consumerGraceMs / 1000) };
+  }
+
+  async #own(principal: Principal, id: unknown): Promise<ConsumerRecord> {
+    const row = typeof id === 'string' ? await this.#store.consumer(id) : null;
+    if (!row || row.tenantId !== principal.tenantId || row.principalId !== principal.principalId) throw new ResolverError('NOT_FOUND', REASONS.notFound, 'no such registration of this caller');
+    return row;
+  }
+
+  async updateRegistration(principal: Principal, input: { registration: string; dependencies?: Array<{ ref: string; contract?: string }> }) {
+    const row = await this.#own(principal, input.registration);
+    if (row.deregisteredAt) throw new ResolverError('CONFLICT', REASONS.invalidBinding, 'the registration was deregistered');
+    await this.#store.saveConsumer({ ...row, dependencies: await this.#dependencies(principal, input.dependencies), lastSeenAt: this.#now().toISOString() }, false);
+    return { registration: row.id };
+  }
+
+  async deregister(principal: Principal, input: { registration: string }) {
+    const row = await this.#own(principal, input.registration);
+    if (!row.deregisteredAt) await this.#store.saveConsumer({ ...row, deregisteredAt: this.#now().toISOString() }, false);
+    this.#knownConsumers.clear();
+    return { registration: row.id, deregistered: true };
+  }
+
+  /** A consumer reports using a resolved target: asserted, kept apart from what Resolver observed. */
+  async report(principal: Principal, input: { ref: string; revision: number; outcome: 'succeeded' | 'failed'; label?: string; consumer?: string }) {
+    const ref = this.#ref(input.ref);
+    await this.#require(principal, 'read', ref);
+    const record = await this.#existing(principal.tenantId, ref);
+    if (!Number.isSafeInteger(input.revision) || input.revision < 1 || input.revision > record.revision) throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, `revision must be 1 to ${record.revision}`);
+    if (input.outcome !== 'succeeded' && input.outcome !== 'failed') throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, 'outcome is succeeded or failed');
+    if (input.label !== undefined && (typeof input.label !== 'string' || input.label.length > 64)) throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, 'label is at most 64 characters');
+    const consumer = await this.#ownConsumer(principal, input.consumer);
+    this.#observations?.usage({ tenantId: principal.tenantId, principalId: principal.principalId, ...(consumer ? { consumer } : {}), ref, revision: input.revision, ...(input.label ? { label: input.label } : {}), outcome: input.outcome });
+    return { recorded: Boolean(this.#observations) };
+  }
+
+  /**
+   * The five facts per consumer of a reference, never merged: declared (registration), registered (liveness),
+   * resolved (observed by Resolver), used (reported by the consumer), verified (no verifier in this milestone).
+   * Refused resolutions (forbidden, not found) and unregistered principals are shown to admins only.
+   */
+  async consumers(principal: Principal, input: { ref: string }) {
+    const ref = this.#ref(input.ref);
+    await this.#require(principal, 'read', ref);
+    await this.#observations?.flush();
+    const admin = (await this.#authorizer.decide(principal, 'admin', '*')).allowed;
+    const [registrations, resolutions, usage] = await Promise.all([
+      this.#store.consumers(principal.tenantId),
+      this.#store.resolutionsFor(principal.tenantId, ref),
+      this.#store.usageFor(principal.tenantId, ref),
+    ]);
+    const byKey = new Map<string, ConsumerFacts>();
+    const facts = (principalId: string, consumer?: string): ConsumerFacts => {
+      const key = `${principalId}\u0000${consumer ?? ''}`;
+      let entry = byKey.get(key);
+      if (!entry) {
+        const reg = consumer ? registrations.find((r) => r.id === consumer) : undefined;
+        entry = {
+          principal: principalId,
+          ...(reg ? { registration: { id: reg.id, application: reg.application, environment: reg.environment, instance: reg.instance, state: this.#consumerState(reg), lastSeenAt: reg.lastSeenAt } } : {}),
+          declared: reg ? reg.dependencies.some((d) => d.ref === ref) : false,
+          resolved: null,
+          refused: [],
+          used: null,
+          verified: null,
+        };
+        byKey.set(key, entry);
+      }
+      return entry;
+    };
+    for (const reg of registrations) if (reg.dependencies.some((d) => d.ref === ref)) facts(reg.principalId, reg.id);
+    for (const row of resolutions) {
+      const entry = facts(row.principalId, row.consumer);
+      if (row.outcome === 'ok') {
+        if (!entry.resolved || row.revision > entry.resolved.latestRevision) entry.resolved = { latestRevision: row.revision, lastAt: row.lastAt, count: row.count };
+        else if (row.revision === entry.resolved.latestRevision) entry.resolved = { ...entry.resolved, count: entry.resolved.count + row.count, lastAt: row.lastAt > entry.resolved.lastAt ? row.lastAt : entry.resolved.lastAt };
+      } else entry.refused.push({ outcome: row.outcome, revision: row.revision, lastAt: row.lastAt, count: row.count });
+    }
+    for (const row of usage) {
+      const entry = facts(row.principalId, row.consumer);
+      if (!entry.used || row.revision > entry.used.latestRevision || (row.revision === entry.used.latestRevision && row.lastAt > entry.used.lastAt)) {
+        entry.used = { latestRevision: row.revision, outcome: row.outcome, ...(row.label ? { label: row.label } : {}), lastAt: row.lastAt };
+      }
+    }
+    const visible = [...byKey.values()].filter((f) => admin || f.declared || f.resolved || f.used).map((f) => (admin ? f : { ...f, refused: [] }));
+    return { ref, consumers: visible, notes: CONSUMER_NOTES };
+  }
+
+  /**
+   * Adoption of one revision, stage by stage: authorized, committed, available, fetched (observed), adopted
+   * (reported), functionally verified (not produced in this milestone). Notification delivery is not a stage.
+   */
+  async adoption(principal: Principal, input: { ref: string; revision?: number }) {
+    const ref = this.#ref(input.ref);
+    await this.#require(principal, 'read', ref);
+    const record = await this.#existing(principal.tenantId, ref);
+    const revision = input.revision ?? record.revision;
+    const row = await this.#store.revision(principal.tenantId, ref, revision);
+    if (!row) throw new ResolverError('NOT_FOUND', REASONS.notFound, `${ref} has no revision ${revision}`);
+    const next = revision < record.revision ? await this.#store.revision(principal.tenantId, ref, revision + 1) : null;
+    const consumers = await this.consumers(principal, { ref });
+    const authorization = row.governance?.mode === 'authorized' ? (await this.#store.authorizationsFor(principal.tenantId, ref)).find((a) => a.revision === revision) : undefined;
+    const live = consumers.consumers.filter((c) => c.registration?.state === 'live');
+    const fetched = consumers.consumers.filter((c) => c.resolved && c.resolved.latestRevision >= revision);
+    const adopted = consumers.consumers.filter((c) => c.used && c.used.latestRevision >= revision && c.used.outcome === 'succeeded');
+    return {
+      ref,
+      revision,
+      currentRevision: record.revision,
+      authorized: row.governance
+        ? { ...row.governance, ...(authorization ? { consumedAt: authorization.consumedAt, consumedBy: authorization.consumedBy } : {}) }
+        : { mode: 'ungoverned' as const },
+      committed: { at: row.at, actor: row.actor, action: row.action, ...(row.seq !== undefined ? { seq: row.seq } : {}) },
+      available: {
+        from: row.at,
+        until: next?.at ?? (record.state === 'revoked' && revision === record.revision ? record.updatedAt : null),
+        current: revision === record.revision && record.state === 'active',
+      },
+      fetched: { basis: 'observed' as const, count: fetched.length, consumers: fetched },
+      notYetFetched: { basis: 'derived' as const, count: live.filter((c) => !fetched.includes(c)).length, consumers: live.filter((c) => !fetched.includes(c)) },
+      adopted: { basis: 'asserted' as const, count: adopted.length, consumers: adopted },
+      functionallyVerified: null,
+      notes: [
+        'fetched: Resolver served this revision (or a later one) to the consumer; at the TTL granularity of the consumer\'s cache.',
+        'adopted: the consumer reported using this revision (or a later one) successfully; asserted, not observed.',
+        'functionallyVerified: no verifier exists in this milestone.',
+        'A change notification reaching a consumer is not adoption: only a resolution shows a fetch, only a report shows use.',
+      ],
+    };
   }
 
   /** Routes this resolver's change notifications through `listener` (the sync loop) instead of announcing them at once. */
@@ -824,3 +1078,25 @@ interface Governed {
   governance?: RevisionGovernance;
   commit: CommitGovernance;
 }
+
+/** One consumer of a reference, its five facts kept apart. */
+interface ConsumerFacts {
+  principal: string;
+  registration?: { id: string; application: string; environment: string; instance: string; state: 'live' | 'stale' | 'deregistered'; lastSeenAt: string };
+  /** The registration declares this reference (asserted by the consumer). */
+  declared: boolean;
+  /** Observed by Resolver: the latest revision served to this consumer. */
+  resolved: { latestRevision: number; lastAt: string; count: number } | null;
+  /** Observed refusals (admins only). */
+  refused: Array<{ outcome: string; revision: number; lastAt: string; count: number }>;
+  /** Reported by the consumer (asserted). */
+  used: { latestRevision: number; outcome: 'succeeded' | 'failed'; label?: string; lastAt: string } | null;
+  /** No verifier in this milestone. */
+  verified: null;
+}
+
+const CONSUMER_NOTES = [
+  'declared and used are asserted by the consumer; resolved is observed by Resolver; registration state is from the watch stream.',
+  'resolved counts are lower bounds (coalesced per instance); a consumer serving its cache is not seen again until its TTL or a change.',
+  'Weighted steering runs in the client: Resolver observes the revision served, not the target selected; a usage report carries the label.',
+];

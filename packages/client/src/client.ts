@@ -49,6 +49,12 @@ export interface ResolverClientOptions {
   timeoutMs?: number;
   onWarning?: (warning: { kind: 'stale' | 'disconnected' | 'reconnected'; ref?: string; error?: unknown }) => void;
   fetch?: typeof globalThis.fetch;
+  /**
+   * Register this running consumer with the resolver: who it is (application, environment, instance) and which
+   * references it declares it depends on. Its resolutions are then recorded under the registration, and its live
+   * connection keeps the registration live. Declared dependencies are asserted; what it resolves is observed.
+   */
+  consumer?: { application: string; environment: string; instance?: string; dependencies?: Array<string | { ref: string; contract?: string }> };
 }
 
 export class ResolverClientError extends Error {
@@ -124,6 +130,7 @@ export class ResolverClient {
   #watching = false;
   #closed = false;
   #stream: { cancel(reason?: string): void } | undefined;
+  #registration: string | undefined;
 
   constructor(options: ResolverClientOptions) {
     this.#options = { live: true, maxStaleSeconds: 300, timeoutMs: 5000, ...options };
@@ -133,6 +140,16 @@ export class ResolverClient {
   static async connect(options: ResolverClientOptions): Promise<ResolverClient> {
     const client = new ResolverClient(options);
     await client.#connection();
+    if (options.consumer) {
+      const { application, environment, instance, dependencies } = options.consumer;
+      const result = await client.#call<{ registration: string }>(CAPABILITIES.register, {
+        application,
+        environment,
+        ...(instance ? { instance } : {}),
+        ...(dependencies ? { dependencies: dependencies.map((d) => (typeof d === 'string' ? { ref: d } : d)) } : {}),
+      });
+      client.#registration = result.registration;
+    }
     if (client.#options.live) client.#startWatch();
     return client;
   }
@@ -171,7 +188,7 @@ export class ResolverClient {
     const current = await this.#current(ref);
     const cached = this.#secrets.get(ref);
     if (cached && cached.revision === current.revision && Date.now() - cached.fetchedAt < current.ttlSeconds * 1000) return cached;
-    const revealed = await this.#call<ResolveResult>(CAPABILITIES.resolve, { ref, reveal: true });
+    const revealed = await this.#call<ResolveResult>(CAPABILITIES.resolve, { ref, reveal: true, ...(this.#registration ? { consumer: this.#registration } : {}) });
     if (revealed.secret === undefined) throw new ResolverClientError('INTERNAL_ERROR', undefined, `${ref} returned no material`);
     const entry = { value: revealed.secret, revision: revealed.revision, fetchedAt: Date.now() };
     this.#secrets.set(ref, entry);
@@ -279,7 +296,28 @@ export class ResolverClient {
     return this.#call(CAPABILITIES.governanceEvents, limit ? { limit } : {});
   }
 
+  /** This consumer's registration id, when `consumer` was given. */
+  get registration(): string | undefined {
+    return this.#registration;
+  }
+
+  /** Reports using a target of `ref` at `revision` (asserted; Resolver records it apart from what it observed). */
+  report(ref: string, revision: number, outcome: 'succeeded' | 'failed', label?: string): Promise<{ recorded: boolean }> {
+    return this.#call(CAPABILITIES.report, { ref, revision, outcome, ...(label ? { label } : {}), ...(this.#registration ? { consumer: this.#registration } : {}) });
+  }
+  /** Consumers of a reference, their declared, registered, resolved and used facts kept apart. */
+  consumers(ref: string): Promise<unknown> {
+    return this.#call(CAPABILITIES.consumers, { ref });
+  }
+  /** Adoption of a revision (default: the current one), stage by stage. */
+  adoption(ref: string, revision?: number): Promise<unknown> {
+    return this.#call(CAPABILITIES.adoption, { ref, ...(revision !== undefined ? { revision } : {}) });
+  }
+
   async close(): Promise<void> {
+    if (this.#registration && !this.#closed) {
+      await this.#call(CAPABILITIES.deregister, { registration: this.#registration }).catch(() => undefined);
+    }
     this.#closed = true;
     this.#stream?.cancel('closed');
     this.#secrets.clear();
@@ -338,7 +376,7 @@ export class ResolverClient {
   }
 
   #fetch(ref: string, extra: { revision?: number }): Promise<ResolveResult> {
-    return this.#call<ResolveResult>(CAPABILITIES.resolve, { ref, ...extra });
+    return this.#call<ResolveResult>(CAPABILITIES.resolve, { ref, ...extra, ...(this.#registration ? { consumer: this.#registration } : {}) });
   }
 
   #steer(result: ResolveResult, key?: string): ResolveResult {
@@ -407,7 +445,7 @@ export class ResolverClient {
     while (!this.#closed) {
       try {
         const client = await this.#connection();
-        const stream = client.stream<ChangeEvent | { heartbeat: string }>(CAPABILITIES.watch, { prefix: 'ref://' });
+        const stream = client.stream<ChangeEvent | { heartbeat: string }>(CAPABILITIES.watch, { prefix: 'ref://', ...(this.#registration ? { consumer: this.#registration } : {}) });
         this.#stream = stream;
         // Anything cached before (re)connecting may have missed a change: revalidate it. Again on the first
         // chunk, which the resolver sends once it is subscribed: a change between the two is not lost.
