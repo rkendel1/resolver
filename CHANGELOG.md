@@ -1,8 +1,16 @@
 # Changelog
 
-## Unreleased (after 0.3.2)
+## 0.3.3 / client 0.2.4 / core 0.1.1
 
-_Next release: `@appport/resolver-core` 0.1.1 (patch). Not published._
+_Prepared; publish with Actions → Publish packages (needs the `NPM_TOKEN` repository secret)._
+
+### CI: the consumer check follows the client's declared SDK range
+
+`scripts/consumer-check.mjs` asserted that `@appport/sdk` resolves to exactly the 1.7 line. The client
+declares `^1.7.0`, and `@appport/sdk` 1.8.0 is published, so every install now resolves 1.8.0 and `main`
+failed CI although nothing was wrong. The check now asserts the declared range (1.x from 1.7, never 1.6 or 2.x)
+and installs the current `@feltdb/feltkit` (0.3.22), whose pins are aligned, so the whole-graph assertions
+(one copy of every `@appport/*` package, one protocol module) are required rather than only reported.
 
 ### Model options named like sizes are no longer refused as credentials
 

@@ -32,7 +32,7 @@ const problems = [];
 const check = (ok, message) => (ok ? say(`✓ ${message}`) : problems.push(message));
 const keep = process.argv.includes('--keep');
 const feltkitArg = process.argv.indexOf('--feltkit');
-const feltkitSpec = feltkitArg >= 0 ? process.argv[feltkitArg + 1] : '0.3.18';
+const feltkitSpec = feltkitArg >= 0 ? process.argv[feltkitArg + 1] : '0.3.22';
 const feltkitDependency = /\.tgz$/.test(feltkitSpec) ? `file:${feltkitSpec.startsWith('/') ? feltkitSpec : join(process.cwd(), feltkitSpec)}` : feltkitSpec;
 
 const work = mkdtempSync(join(tmpdir(), 'resolver-consumer-'));
@@ -86,9 +86,11 @@ try {
   const whole = (ok, message) => (feltkitAligned ? check(ok, message) : say(`${ok ? '✓' : '!'} ${message}${ok ? '' : ' (FeltKit side; required once FeltKit publishes its aligned pins)'}`));
   const duplicates = [...versions].filter(([, v]) => v.size > 1);
   whole(duplicates.length === 0, `one copy of every @appport/* package (${versions.size} packages)${duplicates.length ? `; duplicated: ${duplicates.map(([n, v]) => `${n} ${[...v].join(', ')}`).join('; ')}` : ''}`);
-  whole([...versions.get('@appport/sdk') ?? []].every((v) => /^1\.7\./.test(v)), `@appport/sdk resolves to the 1.7 line only (${[...(versions.get('@appport/sdk') ?? [])].join(', ')})`);
+  // The client's contract is its declared range (^1.7.0): any 1.x from 1.7 on, never the 1.6 line or a 2.x.
+  const inRange = (v) => { const [maj, min] = v.split('.').map(Number); return maj === 1 && min >= 7; };
+  whole([...versions.get('@appport/sdk') ?? []].every(inRange), `@appport/sdk resolves within ^1.7.0 only (${[...(versions.get('@appport/sdk') ?? [])].join(', ')})`);
   const clientSdk = JSON.parse(run(process.execPath, ['-e', 'const {createRequire}=require("node:module");const {join}=require("node:path");const {existsSync,readFileSync}=require("node:fs");const from=join(process.cwd(),"node_modules/@appport/resolver-client/package.json");const d=(createRequire(from).resolve.paths("@appport/sdk")||[]).map(p=>join(p,"@appport/sdk")).find(d=>existsSync(join(d,"package.json")));console.log(JSON.stringify({version:JSON.parse(readFileSync(join(d,"package.json"),"utf8")).version,dir:d}))'], consumer));
-  check(/^1\.7\./.test(clientSdk.version), `the SDK resolver-client resolves is ${clientSdk.version} (${clientSdk.dir})`);
+  check(inRange(clientSdk.version), `the SDK resolver-client resolves is ${clientSdk.version}, within its ^1.7.0 (${clientSdk.dir})`);
   whole([...versions.get('@appport/protocol') ?? []].every((v) => v === '1.5.0'), `@appport/protocol resolves to 1.5.0 only (${[...(versions.get('@appport/protocol') ?? [])].join(', ')})`);
   check([...versions.get('@appport/resolver-client') ?? []].join() === clientPkg.version, `@appport/resolver-client is ${clientPkg.version} (the packed one)`);
   const nestedSdk = join(consumer, 'node_modules/@appport/resolver-client/node_modules/@appport/sdk');
