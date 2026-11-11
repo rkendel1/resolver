@@ -31,6 +31,9 @@ import {
   type ResolveResult,
   type Target,
   type WriteResult,
+  type GovernanceEvent,
+  type MutationPolicy,
+  type SigningKey,
 } from '@appport/resolver-core';
 
 export interface ResolverClientOptions {
@@ -235,11 +238,12 @@ export class ResolverClient {
   history(ref: string, limit?: number): Promise<{ entries: HistoryEntry[] }> {
     return this.#call(CAPABILITIES.history, { ref, ...(limit ? { limit } : {}) });
   }
-  rollback(ref: string, toRevision: number, expectedRevision: number, reason?: string): Promise<WriteResult> {
-    return this.#call(CAPABILITIES.rollback, { ref, toRevision, expectedRevision, ...(reason ? { reason } : {}) });
+  /** `options.authorization`: a change authorization, required where a mutation policy governs the reference. */
+  rollback(ref: string, toRevision: number, expectedRevision: number, reason?: string, options: { authorization?: string } = {}): Promise<WriteResult> {
+    return this.#call(CAPABILITIES.rollback, { ref, toRevision, expectedRevision, ...(reason ? { reason } : {}), ...(options.authorization ? { authorization: options.authorization } : {}) });
   }
-  revoke(ref: string, expectedRevision: number, reason?: string): Promise<WriteResult> {
-    return this.#call(CAPABILITIES.revoke, { ref, expectedRevision, ...(reason ? { reason } : {}) });
+  revoke(ref: string, expectedRevision: number, reason?: string, options: { authorization?: string } = {}): Promise<WriteResult> {
+    return this.#call(CAPABILITIES.revoke, { ref, expectedRevision, ...(reason ? { reason } : {}), ...(options.authorization ? { authorization: options.authorization } : {}) });
   }
   list(prefix?: string): Promise<{ refs: ReferenceSummary[] }> {
     return this.#call(CAPABILITIES.list, prefix ? { prefix } : {});
@@ -261,6 +265,18 @@ export class ResolverClient {
   }
   listKeys(): Promise<{ keys: { id: string; name: string; prefix: string; status: string }[] }> {
     return this.#call(CAPABILITIES.listKeys, {});
+  }
+  /** Mutation policies (admin). Changed by the host operator only. */
+  policies(): Promise<{ policies: MutationPolicy[] }> {
+    return this.#call(CAPABILITIES.policies, {});
+  }
+  /** Change-authorization signing keys and their state (admin). */
+  signingKeys(): Promise<{ keys: SigningKey[] }> {
+    return this.#call(CAPABILITIES.signingKeys, {});
+  }
+  /** Break-glass writes and policy and signing-key changes, newest first (admin). */
+  governanceEvents(limit?: number): Promise<{ events: GovernanceEvent[] }> {
+    return this.#call(CAPABILITIES.governanceEvents, limit ? { limit } : {});
   }
 
   async close(): Promise<void> {

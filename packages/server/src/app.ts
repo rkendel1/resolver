@@ -121,10 +121,10 @@ export function createResolverApplication(resolver: Resolver, services: AppPortS
 
   const capabilities = [
     capability(CAPABILITIES.resolve, 'observation', object({ ref: str, revision: int, key: str, reveal: { type: 'boolean' } }, ['ref']), call(CAPABILITIES.resolve, (p, i) => resolver.resolve(p, i as never)), 'Resolves a reference to its current (or pinned) binding.'),
-    capability(CAPABILITIES.put, 'consequential', object({ ref: str, kind: str, schema: {}, binding: {}, secret: str, expectedRevision: int, reason: str, ttlSeconds: int }, ['ref', 'expectedRevision']), call(CAPABILITIES.put, (p, i) => resolver.put(p, i as never)), 'Creates or updates a reference, conditional on its current revision.'),
+    capability(CAPABILITIES.put, 'consequential', object({ ref: str, kind: str, schema: {}, binding: {}, secret: str, expectedRevision: int, reason: str, ttlSeconds: int, authorization: str, breakGlass: {} }, ['ref', 'expectedRevision']), call(CAPABILITIES.put, (p, i) => resolver.put(p, i as never)), 'Creates or updates a reference, conditional on its current revision.'),
     capability(CAPABILITIES.history, 'observation', object({ ref: str, limit: int }, ['ref']), call(CAPABILITIES.history, (p, i) => resolver.history(p, i as never)), 'Every revision of a reference, with actor and reason.'),
-    capability(CAPABILITIES.rollback, 'consequential', object({ ref: str, toRevision: int, expectedRevision: int, reason: str }, ['ref', 'toRevision', 'expectedRevision']), call(CAPABILITIES.rollback, (p, i) => resolver.rollback(p, i as never)), 'Restores an earlier revision as a new revision.'),
-    capability(CAPABILITIES.revoke, 'consequential', object({ ref: str, expectedRevision: int, reason: str }, ['ref', 'expectedRevision']), call(CAPABILITIES.revoke, (p, i) => resolver.revoke(p, i as never)), 'Revokes a reference: every resolution fails from now on.'),
+    capability(CAPABILITIES.rollback, 'consequential', object({ ref: str, toRevision: int, expectedRevision: int, reason: str, authorization: str, breakGlass: {} }, ['ref', 'toRevision', 'expectedRevision']), call(CAPABILITIES.rollback, (p, i) => resolver.rollback(p, i as never)), 'Restores an earlier revision as a new revision.'),
+    capability(CAPABILITIES.revoke, 'consequential', object({ ref: str, expectedRevision: int, reason: str, authorization: str, breakGlass: {} }, ['ref', 'expectedRevision']), call(CAPABILITIES.revoke, (p, i) => resolver.revoke(p, i as never)), 'Revokes a reference: every resolution fails from now on.'),
     capability(CAPABILITIES.list, 'observation', object({ prefix: str }), call(CAPABILITIES.list, (p, i) => resolver.list(p, i as never)), 'References the caller may read.'),
     capability(CAPABILITIES.grant, 'consequential', object({ subject: str, actions: { type: 'array', items: str }, pattern: str }, ['subject', 'actions', 'pattern']), call(CAPABILITIES.grant, (p, i) => resolver.grant(p, i as never)), 'Grants actions on references to a principal.'),
     capability(CAPABILITIES.ungrant, 'consequential', object({ id: str }, ['id']), call(CAPABILITIES.ungrant, (p, i) => resolver.ungrant(p, i as never)), 'Removes a grant.'),
@@ -132,6 +132,9 @@ export function createResolverApplication(resolver: Resolver, services: AppPortS
     capability(CAPABILITIES.createKey, 'consequential', object({ name: str, expiresAt: str }, ['name']), call(CAPABILITIES.createKey, (p, i) => resolver.createKey(p, i as never)), 'Issues an API key (the secret is returned once).'),
     capability(CAPABILITIES.revokeKey, 'consequential', object({ id: str }, ['id']), call(CAPABILITIES.revokeKey, (p, i) => resolver.revokeKey(p, i as never)), 'Revokes an API key.'),
     capability(CAPABILITIES.listKeys, 'observation', object(), call(CAPABILITIES.listKeys, (p) => resolver.listKeys(p)), 'API keys in the caller\'s tenant.'),
+    capability(CAPABILITIES.policies, 'observation', object(), call(CAPABILITIES.policies, (p) => resolver.policies(p)), 'Mutation policies (changed by the host operator only).'),
+    capability(CAPABILITIES.signingKeys, 'observation', object(), call(CAPABILITIES.signingKeys, (p) => resolver.signingKeys(p)), 'Change-authorization signing keys and their state (changed by the host operator only).'),
+    capability(CAPABILITIES.governanceEvents, 'observation', object({ limit: int }), call(CAPABILITIES.governanceEvents, (p, i) => resolver.governanceEvents(p, i as never)), 'Break-glass writes and policy and signing-key changes, newest first.'),
     defineStreamCapability({
       name: CAPABILITIES.watch,
       version: 1,

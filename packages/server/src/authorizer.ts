@@ -59,6 +59,9 @@ export const RESOLVER_GATEWAY_CAPABILITIES = Object.freeze({
   'resolver.grant': { action: 'admin', resource: 'grant', effect: 'consequential', operation: 'grant' },
   'resolver.ungrant': { action: 'admin', resource: 'grant', effect: 'consequential', operation: 'ungrant' },
   'resolver.grants': { action: 'admin', resource: 'grant', effect: 'observation', operation: 'grants' },
+  'resolver.policies.list': { action: 'admin', resource: 'grant', effect: 'observation', operation: 'policies' },
+  'resolver.signingkeys.list': { action: 'admin', resource: 'grant', effect: 'observation', operation: 'signingKeys' },
+  'resolver.governance.events': { action: 'admin', resource: 'grant', effect: 'observation', operation: 'governanceEvents' },
 } as const satisfies Record<string, { action: Action | 'tenant'; resource: 'reference' | 'grant'; effect: 'observation' | 'consequential'; operation: string }>);
 
 export type ResolverGatewayCapability = keyof typeof RESOLVER_GATEWAY_CAPABILITIES;
