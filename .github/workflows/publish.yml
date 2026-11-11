@@ -1,0 +1,40 @@
+# Publish @appport/resolver-core, @appport/resolver-client and @appport/resolver to npm with
+# scripts/publish-packages.mjs (build, test, publish in dependency order, skipping versions already
+# on npm). Start it from Actions → Publish packages → Run workflow.
+#
+# Needs the repository secret NPM_TOKEN: an npm automation (or granular, bypass-2FA) token that can
+# publish the @appport/resolver* packages.
+name: Publish packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run every step, publish nothing"
+        type: boolean
+        default: false
+
+concurrency:
+  group: publish-packages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Consumer check (the client beside the published FeltKit)
+        run: npm run build && node scripts/consumer-check.mjs
+      - name: Publish
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: node scripts/publish-packages.mjs ${{ inputs.dry_run && '--dry-run' || '' }}
