@@ -1,10 +1,10 @@
 # Resolver: the next milestone
 
-_Design as approved; the implemented guarantees and remaining limitations are in [governance-guarantees.md](governance-guarantees.md) once implementation lands._
+_Design as approved. What was implemented, with its guarantees, evidence and limitations: [governance-guarantees.md](governance-guarantees.md)._
 
 **Consumer registration, resolution observability, and enforced mutation authority.**
 
-Status: **approved design; implementation in progress** (rkendel1/resolver, branch `claude/youthful-thompson-bhqeox`). Grounded in `@appport/resolver` at `c674d14` (0.3.3). File and line
+Status: **implemented** in 0.4.0 (unpublished); see governance-guarantees.md. Grounded in `@appport/resolver` at `c674d14` (0.3.3). File and line
 references are to `packages/server/src` there. Motivated by Resolver Control's gap register
 (`docs/PLATFORM-GAPS.md`, R1 and R4).
 
