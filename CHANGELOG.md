@@ -1,8 +1,18 @@
 # Changelog
 
-## Unreleased
+## Unreleased (after 0.3.2)
 
-_Next release: `@appport/resolver` 0.3.2, `@appport/resolver-client` 0.2.3. `@appport/resolver-core` is unchanged (0.1.0). Prepared, not published._
+_Next release: `@appport/resolver-core` 0.1.1 (patch). Not published._
+
+### Model options named like sizes are no longer refused as credentials
+
+`checkTarget` refused any `model.options` key or `endpoint.headers` name containing `token`, so
+`{ max_tokens: 1024 }` (which `ModelTarget.options` documents as an example) failed with "looks like a credential".
+Keys are now judged by whole words: `access_token`, `apiKey`, `X-Api-Key`, `client_secret`, `Authorization`,
+`password`, `bearer` and `credential` are still refused; `max_tokens`, `maxOutputTokens` and other size settings are
+accepted. Found while auditing the FeltKit M1 generation path. Test: `packages/core/test/core.test.ts`.
+
+## 0.3.2 / client 0.2.3 (published)
 
 ### `@appport/resolver-client` follows the AppPort 1.7 release line
 

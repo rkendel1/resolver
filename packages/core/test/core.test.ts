@@ -25,6 +25,11 @@ describe('bindings', () => {
     expect(checkBinding('model', { value: { provider: 'openai', model: 'gpt-x' } }).ok).toBe(true);
     expect(checkBinding('model', { value: { provider: 'openai' } }).ok).toBe(false);
     expect(checkBinding('model', { value: { provider: 'openai', model: 'm', options: { apiKey: 'sk-1' } } }).ok).toBe(false);
+    for (const key of ['api_key', 'api-key', 'APIKey', 'access_token', 'clientSecret', 'password', 'Authorization', 'bearer', 'credential']) {
+      expect(checkBinding('model', { value: { provider: 'openai', model: 'm', options: { [key]: 'x' } } }).ok, key).toBe(false);
+    }
+    // Size and sampling settings are not credentials, even when their names contain "token".
+    expect(checkBinding('model', { value: { provider: 'openai', model: 'm', options: { max_tokens: 1024, maxTokens: 1024, max_output_tokens: 512, maxOutputTokens: 512, temperature: 0.2 } } }).ok).toBe(true);
     expect(checkBinding('endpoint', { value: { url: 'https://api.example.com/v1' } }).ok).toBe(true);
     expect(checkBinding('endpoint', { value: { url: 'javascript:alert(1)' } }).ok).toBe(false);
     expect(checkBinding('endpoint', { value: { url: 'https://u:p@example.com' } }).ok).toBe(false);

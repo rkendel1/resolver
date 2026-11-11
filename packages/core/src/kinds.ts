@@ -56,7 +56,20 @@ export function isKind(value: unknown): value is Kind {
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const CAPABILITY_REF = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+@[1-9][0-9]*$/;
-const SECRET_LOOKING = /(api[_-]?key|secret|token|password|authorization|bearer)/i;
+/**
+ * Credential-looking option and header names, judged by whole words of the key ("access_token",
+ * "apiKey", "X-Api-Key", "client-secret"), so that size and limit settings such as "max_tokens"
+ * or "maxOutputTokens" are not mistaken for a credential.
+ */
+const SECRET_WORDS = new Set(['secret', 'token', 'password', 'passwd', 'authorization', 'bearer', 'credential', 'credentials', 'apikey']);
+function secretLooking(key: string): boolean {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  return words.some((w, i) => SECRET_WORDS.has(w) || (w === 'api' && words[i + 1] === 'key'));
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -103,7 +116,7 @@ export function checkTarget(kind: Kind, target: unknown): Parsed<Target> {
       }
       if (options !== undefined) {
         if (!isObject(options)) return { ok: false, error: 'model.options must be an object' };
-        const leaked = Object.keys(options).find((k) => SECRET_LOOKING.test(k));
+        const leaked = Object.keys(options).find(secretLooking);
         if (leaked) return { ok: false, error: `model.options.${leaked} looks like a credential: use model.credential` };
         out.options = options as { [key: string]: Json };
       }
@@ -120,7 +133,7 @@ export function checkTarget(kind: Kind, target: unknown): Parsed<Target> {
         if (!isObject(headers) || !Object.values(headers).every((v) => typeof v === 'string')) {
           return { ok: false, error: 'endpoint.headers must map names to strings' };
         }
-        const leaked = Object.keys(headers).find((k) => SECRET_LOOKING.test(k));
+        const leaked = Object.keys(headers).find(secretLooking);
         if (leaked) return { ok: false, error: `endpoint.headers.${leaked} looks like a credential: use a secret reference` };
         out.headers = headers as Record<string, string>;
       }
