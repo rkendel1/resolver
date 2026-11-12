@@ -224,6 +224,10 @@ export class ResolverClient {
   put(input: PutInput): Promise<WriteResult> {
     return this.#call(CAPABILITIES.put, input);
   }
+  /** References with exactly this lookup entry that this key may read (active only unless `includeRevoked`). */
+  lookup(key: string, value: string, options: { includeRevoked?: boolean } = {}): Promise<{ refs: ReferenceSummary[] }> {
+    return this.#call(CAPABILITIES.lookup, { key, value, ...(options.includeRevoked ? { includeRevoked: true } : {}) });
+  }
   /** Creates or replaces a binding, reading the current revision first. Not for concurrent writers. */
   async set(ref: string, input: Omit<PutInput, 'ref' | 'expectedRevision'>): Promise<WriteResult> {
     const current = await this.#call<ResolveResult>(CAPABILITIES.resolve, { ref }).catch((error) => {

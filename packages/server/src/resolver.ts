@@ -16,6 +16,10 @@ import {
   REASONS,
   select,
   ACTIONS,
+  LOOKUP_KEY,
+  MAX_LOOKUP_VALUE,
+  type LookupEntry,
+  type LookupInput,
   type Action,
   type Binding,
   type ChangeEvent,
@@ -146,6 +150,23 @@ export class Resolver {
     return { entries: rows.slice(-limit).map(toHistory) };
   }
 
+  /**
+   * Exact lookup by a reference's lookup entry, through the index: the references with this key and
+   * value that the caller may read, active only unless asked. Resolution, not authorization: what a
+   * reference's value grants is decided by whoever uses it. A reference the caller may not read is
+   * absent, exactly as in `list`.
+   */
+  async lookup(principal: Principal, input: LookupInput): Promise<{ refs: ReferenceSummary[] }> {
+    const entry = checkLookup({ key: input?.key, value: input?.value } as LookupEntry, null)!;
+    const out: ReferenceSummary[] = [];
+    for (const record of await this.#store.lookup(principal.tenantId, entry.key, entry.value)) {
+      if (record.state === 'revoked' && !input.includeRevoked) continue;
+      if (!(await this.#authorizer.decide(principal, 'read', record.ref)).allowed) continue;
+      out.push({ ref: record.ref, kind: record.kind, revision: record.revision, state: record.state, updatedAt: record.updatedAt });
+    }
+    return { refs: out.sort((a, b) => (a.ref < b.ref ? -1 : 1)) };
+  }
+
   async list(principal: Principal, input: { prefix?: string }): Promise<{ refs: ReferenceSummary[] }> {
     const prefix = input.prefix ?? 'ref://';
     if (!prefix.startsWith('ref://')) throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, 'prefix must start with ref://');
@@ -270,6 +291,7 @@ export class Resolver {
       if (!ok.ok) throw new ResolverError('INVALID_INPUT', ok.reason, ok.error);
     }
     const schema = current?.schema ?? (input.schema as Json | undefined) ?? null;
+    const lookup = checkLookup(input.lookup, current);
     const ttlSeconds = ttl(input.ttlSeconds, current?.ttlSeconds);
 
     let binding: Binding;
@@ -287,7 +309,7 @@ export class Resolver {
       await this.#checkTargets(principal, kind, binding, schema);
     }
     try {
-      return await this.#commit(principal, current, { ref, kind, schema, binding, ttlSeconds }, current ? 'update' : 'create', expected, input.reason);
+      return await this.#commit(principal, current, { ref, kind, schema, binding, ttlSeconds, ...(lookup ? { lookup } : {}) }, current ? 'update' : 'create', expected, input.reason);
     } catch (error) {
       // A definite conflict means the revision was never committed (another writer won): no revision will
       // ever point at the stored version, so its material is deleted rather than kept. Any other failure
@@ -542,7 +564,7 @@ export class Resolver {
   async #commit(
     principal: Principal,
     current: ReferenceRecord | null,
-    next: { ref: ReferenceRecord['ref']; kind: ReferenceRecord['kind']; schema: Json | null; binding: Binding; ttlSeconds: number },
+    next: { ref: ReferenceRecord['ref']; kind: ReferenceRecord['kind']; schema: Json | null; binding: Binding; ttlSeconds: number; lookup?: LookupEntry },
     action: HistoryEntry['action'],
     expected: number,
     reason: string | undefined,
@@ -566,6 +588,12 @@ export class Resolver {
       createdAt: current?.createdAt ?? at,
       updatedAt: at,
       updatedBy: actor(principal),
+      // The lookup entry is fixed at creation and kept through every later revision (revocation included).
+      ...(current?.lookupKey !== undefined
+        ? { lookupKey: current.lookupKey, lookupValue: current.lookupValue! }
+        : next.lookup
+          ? { lookupKey: next.lookup.key, lookupValue: next.lookup.value }
+          : {}),
     };
     const entry: Omit<RevisionRecord, 'id' | 'referenceId' | 'tenantId' | 'ref' | 'revision'> = {
       action,
@@ -633,3 +661,19 @@ function toHistory(row: RevisionRecord): HistoryEntry {
   };
 }
 
+
+/** A lookup entry: valid, and on an existing reference identical to the one it was created with. */
+function checkLookup(input: unknown, current: ReferenceRecord | null): LookupEntry | undefined {
+  if (input === undefined || input === null) return undefined;
+  const entry = input as Partial<LookupEntry>;
+  if (typeof entry.key !== 'string' || !LOOKUP_KEY.test(entry.key)) {
+    throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, 'lookup.key is lowercase letters, digits, ".", "_", ":" and "-" (at most 128)');
+  }
+  if (typeof entry.value !== 'string' || entry.value.length === 0 || entry.value.length > MAX_LOOKUP_VALUE) {
+    throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, `lookup.value is 1 to ${MAX_LOOKUP_VALUE} characters`);
+  }
+  if (current && (current.lookupKey !== entry.key || current.lookupValue !== entry.value)) {
+    throw new ResolverError('INVALID_INPUT', REASONS.invalidBinding, 'the lookup entry is fixed when the reference is created');
+  }
+  return { key: entry.key, value: entry.value };
+}
