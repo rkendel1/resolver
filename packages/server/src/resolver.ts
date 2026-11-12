@@ -579,8 +579,7 @@ export class Resolver {
       await this.#checkTargets(principal, kind, binding, schema);
     }
     try {
-      return await this.#commit(principal, current, { ref, kind, schema, binding, ttlSeconds, ...(lookup ? { lookup } : {}) }, current ? 'update' : 'create', expected, input.reason);
-      return await this.#commit(principal, current, { ref, kind, schema, binding, ttlSeconds }, current ? 'update' : 'create', expected, input.reason, undefined, 'active', governed);
+      return await this.#commit(principal, current, { ref, kind, schema, binding, ttlSeconds, ...(lookup ? { lookup } : {}) }, current ? 'update' : 'create', expected, input.reason, undefined, 'active', governed);
     } catch (error) {
       // A definite conflict means the revision was never committed (another writer won, or the authorization was
       // already consumed): no revision will ever point at the stored version, so its material is deleted rather than

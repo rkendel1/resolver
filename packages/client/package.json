@@ -20,7 +20,7 @@
   ],
   "dependencies": {
     "@appport/resolver-core": "0.2.0",
-    "@appport/sdk": "^1.7.0"
+    "@appport/sdk": "^1.8.1"
   },
   "repository": {
     "type": "git",

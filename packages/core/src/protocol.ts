@@ -98,18 +98,19 @@ export interface PutInput {
    * It is part of the reference for its whole life: an update may repeat it, never change it.
    */
   lookup?: LookupEntry;
-}
-
-/** `key`: what kind of thing `value` is, within the caller's tenant (e.g. `identity:multiplayer:prod`). */
-export interface LookupEntry {
-  key: string;
-  value: string;
+  /**
    * A change authorization (compact JWS, Ed25519) from an issuer the reference's mutation policy trusts. Required
    * when a policy governs this reference and operation; consumed by the write that it admits.
    */
   authorization?: string;
   /** Host operator only: write under a mutation policy without an authorization. Recorded as a governance event. */
   breakGlass?: { reason: string };
+}
+
+/** `key`: what kind of thing `value` is, within the caller's tenant (e.g. `identity:multiplayer:prod`). */
+export interface LookupEntry {
+  key: string;
+  value: string;
 }
 
 /** Exact lookup: the references with this key and value that the caller may read. */

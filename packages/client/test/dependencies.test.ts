@@ -33,7 +33,7 @@ const atLeast = (v: string, floor: string) => {
 describe('@appport/resolver-client depends on the AppPort 1.7 release line', () => {
   it('declares a caret range from 1.7.0, never the 1.6.0 pin', () => {
     const range = clientPkg.dependencies['@appport/sdk'];
-    expect(range).toMatch(/^\^1\.7\.\d+$/);
+    expect(range).toMatch(/^\^1\.([7-9]|\d{2,})\.\d+$/);
     // A caret range from 1.7.0 admits 1.7.x and later minors below 2.0.0, and nothing from the 1.6 line.
     const floor = range.slice(1);
     expect(atLeast(floor, '1.7.0')).toBe(true);
