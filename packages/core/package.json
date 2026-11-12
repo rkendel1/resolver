@@ -1,6 +1,6 @@
 {
   "name": "@appport/resolver-core",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Reference names, kinds, bindings and traffic steering shared by the resolver and its clients. Pure: no I/O.",
   "type": "module",
   "main": "./dist/index.js",

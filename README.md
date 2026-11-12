@@ -135,8 +135,11 @@ The `.resolver` directory holds `vault.key` and `verifier.key` (mode 0600). In p
 | `resolver backup <dir>` / `restore <dir>` / `verify` | state and vault together; integrity check ([runbook](docs/backup-restore.md)) |
 | `resolver vault rotate` | re-seal every version under `RESOLVER_VAULT_KEY` ([procedure](docs/vault-key-rotation.md)) |
 | `resolver get <ref> [--key K] [--revision N] [--reveal]` | resolve (reveal: print a secret) |
-| `resolver set <ref> [--kind K] (--value JSON \| --binding JSON \| --secret-stdin) [--schema JSON] [--reason R] [--ttl S]` | create or change |
-| `resolver history <ref>` / `rollback <ref> <revision>` / `revoke <ref>` | revisions |
+| `resolver set <ref> [--kind K] (--value JSON \| --binding JSON \| --secret-stdin) [--schema JSON] [--reason R] [--ttl S] [--authorization TOKEN]` | create or change |
+| `resolver history <ref>` / `rollback <ref> <revision>` / `revoke <ref>` (each `[--authorization TOKEN]`) | revisions |
+| `resolver policy set\|remove\|list`, `resolver signing-key add\|retire\|revoke\|list` (`--tenant T --reason R`) | mutation governance, as the host operator on the state host ([Governance](#governance)) |
+| `resolver break-glass set\|rollback\|revoke <ref> … --tenant T --reason R` | an operator write under a policy, recorded as a governance event |
+| `resolver policies` / `signing-keys` / `governance` | (admin) read policies, keys, governance events |
 | `resolver list [prefix]` / `watch [prefix]` | browse, follow changes |
 | `resolver keys create <name> [--grant actions:pattern]...` / `keys list` / `keys revoke <id>` | API keys |
 | `resolver grant <principal> <actions> <pattern>` / `grants` / `ungrant <id>` | grants |
@@ -171,6 +174,57 @@ stack-agent work --appport "$(resolver get ref://prod/agents/claims-review | jq 
 
 The resolver refuses a binding whose served contract differs from the pin, and Stack-Agent re-checks the
 pin before every call (rkendel1/stack-agent#77).
+
+## Governance
+
+A **mutation policy** makes changes to matching references require a **change authorization**: a compact JWS signed
+with Ed25519 by an issuer the policy trusts (an approval service such as Resolver Control), verified locally.
+
+```bash
+# On the state host, as the operator: trust an issuer's key, govern production.
+resolver signing-key add rc-2026-11 --tenant acme --issuer resolver-control --public-key <base64url> --reason "approvals"
+resolver policy set prod --tenant acme --pattern 'ref://prod/*' --operations put,put-secret,rollback,revoke \
+  --issuer resolver-control --max-validity 900 --reason "production changes need an approved change"
+```
+
+```ts
+// The issuer, once a change is approved (Node):
+import { signChangeAuthorization } from '@appport/resolver-client/authorization';
+const authorization = signChangeAuthorization({ privateKey, kid: 'rc-2026-11', issuer: 'resolver-control', tenant: 'acme',
+  ref: 'ref://prod/chat/model', op: 'put', expectedRevision: 7, request: { kind: 'model', binding }, decision: 'CHG-12' });
+await resolver.put({ ref: 'ref://prod/chat/model', binding, expectedRevision: 7, authorization });
+```
+
+- **Bound to one change.** The token's claims include tenant, reference, operation, expected revision and a digest of
+  the exact request. That covers kind, schema, normalized binding and ttl; a secret write covers kind and ttl,
+  never the material. Anything else is refused.
+- **Used once.** It is consumed in the same FeltDB transaction as the revision it admits.
+- **Keys rotate and revoke.** A retired key verifies only what it signed before retirement; a revoked key verifies
+  nothing.
+- **Trust roots are host-level.** Policies and keys are changed by the host operator only, with a reason. API keys,
+  `admin` included, can read them.
+- **No silent bypass.** The operator is refused like anyone, unless it uses `break-glass` with a reason. That is
+  recorded on the revision, as a governance event in the same transaction, and on watchers' change events.
+- **Without a policy, nothing changes.**
+
+Guarantees, evidence and limitations: [docs/governance-guarantees.md](docs/governance-guarantees.md).
+
+## Consumers and adoption
+
+Resolver records what consumers resolve by default (observed), separately from what they declare and report
+(asserted):
+
+```ts
+const resolver = await ResolverClient.connect({ url, apiKey,
+  consumer: { application: 'storefront', environment: 'prod', instance: 'web-7f82', dependencies: ['ref://prod/search'] } });
+await resolver.report('ref://prod/search', revision, 'succeeded', label);   // asserted use
+await resolver.adoption('ref://prod/search');   // authorized, committed, available, fetched, adopted, functionally verified
+```
+
+`resolver.consumers.list { ref }` keeps declared, registered (live from the watch stream), resolved, used and
+verified apart. `resolver.adoption` never counts a delivered notification as a fetch or as adoption. Recording
+never blocks or fails a resolution, and stores no secret material or steering key. Turn it off with
+`observeResolutions: false`.
 
 ## Management UI
 
@@ -261,6 +315,12 @@ client (0.2.2, `@appport/sdk` 1.6.0) installed two. This workspace overrides `@f
 serves the resolver and `@appport/services` in the tests.
 
 ## Limits
+
+- **Governance is rooted in the host.** The operator (or a FeltDB administrator) can change policies, keys and
+  revisions; everything is recorded, but not tamper-evidently. See
+  [docs/governance-guarantees.md](docs/governance-guarantees.md).
+- **Observed counts are lower bounds.** They are coalesced per instance, and "fetched" has the consumer's TTL
+  granularity.
 
 - **Change notifications between instances poll.** An instance learns of another's changes within its
   sync interval (1 s by default; measured p50 0.5 s). Every request reads the shared state directly, so

@@ -6,6 +6,7 @@
 import type { Binding, WeightedTarget } from './binding.js';
 import type { Json, Kind, Target } from './kinds.js';
 import type { RefName } from './names.js';
+import type { GovernanceEvent, MutationPolicy, RevisionGovernance, SigningKey } from './governance.js';
 
 export const CAPABILITIES = {
   resolve: 'resolver.resolve',
@@ -22,6 +23,17 @@ export const CAPABILITIES = {
   createKey: 'resolver.keys.create',
   revokeKey: 'resolver.keys.revoke',
   listKeys: 'resolver.keys.list',
+  // Governance (read-only over AppPort: policies and signing keys are changed by the host operator only).
+  policies: 'resolver.policies.list',
+  signingKeys: 'resolver.signingkeys.list',
+  governanceEvents: 'resolver.governance.events',
+  // Consumers and adoption.
+  register: 'resolver.consumers.register',
+  updateRegistration: 'resolver.consumers.update',
+  deregister: 'resolver.consumers.deregister',
+  consumers: 'resolver.consumers.list',
+  report: 'resolver.consumers.report',
+  adoption: 'resolver.adoption',
 } as const;
 
 /**
@@ -44,6 +56,8 @@ export interface ResolveInput {
   key?: string;
   /** Secrets only: return the material. Needs the `reveal` action. */
   reveal?: boolean;
+  /** The caller's consumer registration (`resolver.consumers.register`): the resolution is recorded under it. */
+  consumer?: string;
 }
 
 export interface ResolveResult {
@@ -90,6 +104,12 @@ export interface PutInput {
 export interface LookupEntry {
   key: string;
   value: string;
+   * A change authorization (compact JWS, Ed25519) from an issuer the reference's mutation policy trusts. Required
+   * when a policy governs this reference and operation; consumed by the write that it admits.
+   */
+  authorization?: string;
+  /** Host operator only: write under a mutation policy without an authorization. Recorded as a governance event. */
+  breakGlass?: { reason: string };
 }
 
 /** Exact lookup: the references with this key and value that the caller may read. */
@@ -116,12 +136,26 @@ export interface RollbackInput {
   toRevision: number;
   expectedRevision: number;
   reason?: string;
+  /**
+   * A change authorization (compact JWS, Ed25519) from an issuer the reference's mutation policy trusts. Required
+   * when a policy governs this reference and operation; consumed by the write that it admits.
+   */
+  authorization?: string;
+  /** Host operator only: write under a mutation policy without an authorization. Recorded as a governance event. */
+  breakGlass?: { reason: string };
 }
 
 export interface RevokeInput {
   ref: string;
   expectedRevision: number;
   reason?: string;
+  /**
+   * A change authorization (compact JWS, Ed25519) from an issuer the reference's mutation policy trusts. Required
+   * when a policy governs this reference and operation; consumed by the write that it admits.
+   */
+  authorization?: string;
+  /** Host operator only: write under a mutation policy without an authorization. Recorded as a governance event. */
+  breakGlass?: { reason: string };
 }
 
 export interface HistoryEntry {
@@ -135,6 +169,8 @@ export interface HistoryEntry {
   at: string;
   /** For a rollback: the revision whose binding was restored. */
   restoredFrom?: number;
+  /** The authority that admitted this revision under a mutation policy (absent when none governed it). */
+  governance?: RevisionGovernance;
 }
 
 export interface ReferenceSummary {
@@ -150,6 +186,8 @@ export interface WatchInput {
   refs?: string[];
   /** Or every reference under a prefix (`ref://prod/` or `ref://prod/payments/`). */
   prefix?: string;
+  /** The caller's consumer registration: the open stream keeps it live. */
+  consumer?: string;
 }
 
 /** A change notification. It names what changed; the client re-resolves with its own authority. */
@@ -159,6 +197,8 @@ export interface ChangeEvent {
   revision: number;
   state: ReferenceState;
   at: string;
+  /** How a governed revision was admitted: by an authorization, or by operator break-glass. Absent otherwise. */
+  governance?: 'authorized' | 'break-glass';
 }
 
 export interface Grant {
@@ -180,4 +220,14 @@ export const REASONS = {
   incompatible: 'resolver.incompatible-target',
   forbidden: 'resolver.forbidden',
   custody: 'resolver.custody-unavailable',
+  /** A mutation policy governs this reference and operation; the write carried no authorization. */
+  authorizationRequired: 'resolver.authorization-required',
+  /** The authorization does not admit this write (signature, key, issuer, time, or a claim that does not match). */
+  authorizationInvalid: 'resolver.authorization-invalid',
+  /** The authorization was already used by an earlier write. */
+  authorizationConsumed: 'resolver.authorization-consumed',
+  /** Break-glass is the host operator's alone, and needs a reason. */
+  breakGlassRefused: 'resolver.break-glass-refused',
 } as const;
+
+export type { GovernanceEvent, MutationPolicy, RevisionGovernance, SigningKey };

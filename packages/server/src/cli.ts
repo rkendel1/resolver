@@ -9,6 +9,15 @@
  *   resolver verify                                          state against vault (exit 1 on problems)
  *   resolver vault rotate                                    re-seal every version under RESOLVER_VAULT_KEY
  *
+ * Mutation governance, as the host operator (the trust roots are configured on the state host, never over the
+ * network; every change needs --reason and is a governance event):
+ *   resolver policy set <id> --tenant T --pattern P --operations put,put-secret,rollback,revoke --issuer I [--issuer J] [--max-validity S] --reason R
+ *   resolver policy remove <id> --tenant T --reason R | policy list --tenant T
+ *   resolver signing-key add <kid> --tenant T --issuer I --public-key <base64url> --reason R
+ *   resolver signing-key retire|revoke <kid> --tenant T --reason R | signing-key list --tenant T
+ *   resolver break-glass set <ref> --tenant T (--value JSON | --binding JSON | --secret-stdin) [--kind K] --reason R
+ *   resolver break-glass rollback <ref> <revision> --tenant T --reason R | break-glass revoke <ref> --tenant T --reason R
+ *
  * These run against the state and vault directly (configuration below). Configuration, all optional
  * except as noted:
  *   RESOLVER_ENV=production|development      default production (outbound fails closed)
@@ -29,8 +38,9 @@
  * authorized, recorded and pushed to running consumers exactly like any other client's:
  *
  *   resolver get <ref> [--key K] [--revision N] [--reveal]
- *   resolver set <ref> --kind <kind> (--value JSON | --binding JSON | --secret-stdin) [--reason R] [--ttl S] [--schema JSON]
- *   resolver history <ref> | rollback <ref> <revision> | revoke <ref> | list [prefix] | watch [prefix]
+ *   resolver set <ref> --kind <kind> (--value JSON | --binding JSON | --secret-stdin) [--reason R] [--ttl S] [--schema JSON] [--authorization TOKEN]
+ *   resolver history <ref> | rollback <ref> <revision> [--authorization TOKEN] | revoke <ref> [--authorization TOKEN] | list [prefix] | watch [prefix]
+ *   resolver policies | signing-keys | governance            (admin) mutation policies, signing keys, governance events
  *   resolver keys create <name> [--grant actions:pattern]... | keys list | keys revoke <id>
  *   resolver grant <subject> <actions> <pattern> | grants | ungrant <id>
  */
@@ -54,7 +64,7 @@ export interface CliIo {
   untilStopped?: () => Promise<void>;
 }
 
-const USAGE = `usage: resolver <init|serve|backup|restore|verify|vault|get|set|history|rollback|revoke|list|watch|keys|grant|grants|ungrant> ...
+const USAGE = `usage: resolver <init|serve|backup|restore|verify|vault|policy|signing-key|break-glass|get|set|history|rollback|revoke|list|watch|keys|grant|grants|ungrant|policies|signing-keys|governance> ...
 See the README for every option.`;
 
 function parse(argv: string[]): { positional: string[]; flags: Map<string, string[]> } {
@@ -198,6 +208,51 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
       }
     }
 
+    if (command === 'policy' || command === 'signing-key' || command === 'break-glass') {
+      const tenant = flag('tenant');
+      if (!tenant) throw new Error(`usage: resolver ${command} … --tenant T (governance is per tenant)`);
+      const runtime = await localRuntime(flags, io.env);
+      try {
+        const operator = runtime.operator(tenant);
+        const r = runtime.resolver;
+        const reason = flag('reason') ?? '';
+        const [sub, arg, extra] = rest;
+        if (command === 'policy') {
+          if (sub === 'list') return json(await r.policies(operator), io), 0;
+          if (sub === 'remove' && arg) return json(await r.removePolicy(operator, { id: arg, reason }), io), 0;
+          if (sub === 'set' && arg) {
+            const maxValidity = flag('max-validity');
+            return json(await r.setPolicy(operator, { id: arg, pattern: flag('pattern') ?? '', operations: (flag('operations') ?? '').split(',').filter(Boolean), issuers: flags.get('issuer') ?? [], ...(maxValidity ? { maxValiditySeconds: Number(maxValidity) } : {}), reason }), io), 0;
+          }
+          throw new Error('usage: resolver policy set <id> --pattern P --operations … --issuer I --reason R | remove <id> --reason R | list');
+        }
+        if (command === 'signing-key') {
+          if (sub === 'list') return json(await r.signingKeys(operator), io), 0;
+          if (sub === 'add' && arg) return json(await r.addSigningKey(operator, { kid: arg, issuer: flag('issuer') ?? '', publicKey: flag('public-key') ?? '', reason }), io), 0;
+          if (sub === 'retire' && arg) return json(await r.retireSigningKey(operator, { kid: arg, reason }), io), 0;
+          if (sub === 'revoke' && arg) return json(await r.revokeSigningKey(operator, { kid: arg, reason }), io), 0;
+          throw new Error('usage: resolver signing-key add <kid> --issuer I --public-key K --reason R | retire <kid> --reason R | revoke <kid> --reason R | list');
+        }
+        // break-glass: an explicit operator write under a mutation policy, recorded as a governance event.
+        const breakGlass = { reason };
+        const currentRevision = async (ref: string) =>
+          (await r.history(operator, { ref }).catch((e: { reason?: string }) => (e.reason === 'resolver.not-found' ? { entries: [] } : Promise.reject(e)))).entries.at(-1)?.revision ?? 0;
+        if (sub === 'set' && arg) {
+          const input: Record<string, unknown> = { ref: arg, expectedRevision: await currentRevision(arg), breakGlass };
+          if (flag('kind')) input['kind'] = flag('kind');
+          if (flag('value') !== undefined) input['binding'] = { value: JSON.parse(flag('value')!) };
+          if (flag('binding') !== undefined) input['binding'] = JSON.parse(flag('binding')!);
+          if (flag('secret-stdin')) input['secret'] = (await io.stdin()).replace(/\r?\n$/, '');
+          return json(await r.put(operator, input as never), io), 0;
+        }
+        if (sub === 'rollback' && arg && extra) return json(await r.rollback(operator, { ref: arg, toRevision: Number(extra), expectedRevision: await currentRevision(arg), breakGlass }), io), 0;
+        if (sub === 'revoke' && arg) return json(await r.revoke(operator, { ref: arg, expectedRevision: await currentRevision(arg), breakGlass }), io), 0;
+        throw new Error('usage: resolver break-glass set <ref> (--value|--binding|--secret-stdin) --reason R | rollback <ref> <revision> --reason R | revoke <ref> --reason R');
+      } finally {
+        await runtime.close();
+      }
+    }
+
     const url = flag('url') ?? io.env['RESOLVER_URL'];
     const apiKey = io.env['RESOLVER_API_KEY'];
     if (!command) {
@@ -233,6 +288,7 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
           if (flag('secret-stdin')) input['secret'] = (await io.stdin()).replace(/\r?\n$/, '');
           if (flag('reason')) input['reason'] = flag('reason');
           if (flag('ttl')) input['ttlSeconds'] = Number(flag('ttl'));
+          if (flag('authorization')) input['authorization'] = flag('authorization');
           json(await client.set(ref, input as never), io);
           return 0;
         }
@@ -241,12 +297,12 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
           return 0;
         case 'rollback': {
           const current = await client.resolve(rest[0]!);
-          json(await client.rollback(rest[0]!, Number(rest[1]), current.currentRevision, flag('reason')), io);
+          json(await client.rollback(rest[0]!, Number(rest[1]), current.currentRevision, flag('reason'), { ...(flag('authorization') ? { authorization: flag('authorization')! } : {}) }), io);
           return 0;
         }
         case 'revoke': {
           const current = await client.resolve(rest[0]!);
-          json(await client.revoke(rest[0]!, current.currentRevision, flag('reason')), io);
+          json(await client.revoke(rest[0]!, current.currentRevision, flag('reason'), { ...(flag('authorization') ? { authorization: flag('authorization')! } : {}) }), io);
           return 0;
         }
         case 'list':
@@ -279,6 +335,15 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
           return 0;
         case 'grants':
           json(await client.grants(), io);
+          return 0;
+        case 'policies':
+          json(await client.policies(), io);
+          return 0;
+        case 'signing-keys':
+          json(await client.signingKeys(), io);
+          return 0;
+        case 'governance':
+          json(await client.governanceEvents(), io);
           return 0;
         case 'ungrant':
           json(await client.ungrant(rest[0]!), io);

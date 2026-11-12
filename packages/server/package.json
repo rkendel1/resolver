@@ -1,6 +1,6 @@
 {
   "name": "@appport/resolver",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "The resolver: an AppPort host that stores typed, revisioned, steerable references on FeltDB, with AppPort Services API keys and secret custody.",
   "type": "module",
   "main": "./dist/index.js",
@@ -23,8 +23,8 @@
     "@appport/authorization": "1.1.1",
     "@appport/core": "1.7.1",
     "@appport/protocol": "1.5.0",
-    "@appport/resolver-client": "0.2.3",
-    "@appport/resolver-core": "0.1.1",
+    "@appport/resolver-client": "0.3.0",
+    "@appport/resolver-core": "0.2.0",
     "@appport/schema": "1.1.6",
     "@appport/sdk": "1.7.0",
     "@appport/server": "1.3.1",

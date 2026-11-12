@@ -120,11 +120,11 @@ export function createResolverApplication(resolver: Resolver, services: AppPortS
     defineCapability({ name, version: 1, description, effect, authorization: [PERMISSION], input, output: any, handler: handler as never } as never);
 
   const capabilities = [
-    capability(CAPABILITIES.resolve, 'observation', object({ ref: str, revision: int, key: str, reveal: { type: 'boolean' } }, ['ref']), call(CAPABILITIES.resolve, (p, i) => resolver.resolve(p, i as never)), 'Resolves a reference to its current (or pinned) binding.'),
-    capability(CAPABILITIES.put, 'consequential', object({ ref: str, kind: str, schema: {}, binding: {}, secret: str, expectedRevision: int, reason: str, ttlSeconds: int }, ['ref', 'expectedRevision']), call(CAPABILITIES.put, (p, i) => resolver.put(p, i as never)), 'Creates or updates a reference, conditional on its current revision.'),
+    capability(CAPABILITIES.resolve, 'observation', object({ ref: str, revision: int, key: str, reveal: { type: 'boolean' }, consumer: str }, ['ref']), call(CAPABILITIES.resolve, (p, i) => resolver.resolve(p, i as never)), 'Resolves a reference to its current (or pinned) binding.'),
+    capability(CAPABILITIES.put, 'consequential', object({ ref: str, kind: str, schema: {}, binding: {}, secret: str, expectedRevision: int, reason: str, ttlSeconds: int, authorization: str, breakGlass: {} }, ['ref', 'expectedRevision']), call(CAPABILITIES.put, (p, i) => resolver.put(p, i as never)), 'Creates or updates a reference, conditional on its current revision.'),
     capability(CAPABILITIES.history, 'observation', object({ ref: str, limit: int }, ['ref']), call(CAPABILITIES.history, (p, i) => resolver.history(p, i as never)), 'Every revision of a reference, with actor and reason.'),
-    capability(CAPABILITIES.rollback, 'consequential', object({ ref: str, toRevision: int, expectedRevision: int, reason: str }, ['ref', 'toRevision', 'expectedRevision']), call(CAPABILITIES.rollback, (p, i) => resolver.rollback(p, i as never)), 'Restores an earlier revision as a new revision.'),
-    capability(CAPABILITIES.revoke, 'consequential', object({ ref: str, expectedRevision: int, reason: str }, ['ref', 'expectedRevision']), call(CAPABILITIES.revoke, (p, i) => resolver.revoke(p, i as never)), 'Revokes a reference: every resolution fails from now on.'),
+    capability(CAPABILITIES.rollback, 'consequential', object({ ref: str, toRevision: int, expectedRevision: int, reason: str, authorization: str, breakGlass: {} }, ['ref', 'toRevision', 'expectedRevision']), call(CAPABILITIES.rollback, (p, i) => resolver.rollback(p, i as never)), 'Restores an earlier revision as a new revision.'),
+    capability(CAPABILITIES.revoke, 'consequential', object({ ref: str, expectedRevision: int, reason: str, authorization: str, breakGlass: {} }, ['ref', 'expectedRevision']), call(CAPABILITIES.revoke, (p, i) => resolver.revoke(p, i as never)), 'Revokes a reference: every resolution fails from now on.'),
     capability(CAPABILITIES.list, 'observation', object({ prefix: str }), call(CAPABILITIES.list, (p, i) => resolver.list(p, i as never)), 'References the caller may read.'),
     capability(CAPABILITIES.lookup, 'observation', object({ key: str, value: str, includeRevoked: { type: 'boolean' } }, ['key', 'value']), call(CAPABILITIES.lookup, (p, i) => resolver.lookup(p, i as never)), 'References with exactly this lookup entry that the caller may read (indexed).'),
     capability(CAPABILITIES.grant, 'consequential', object({ subject: str, actions: { type: 'array', items: str }, pattern: str }, ['subject', 'actions', 'pattern']), call(CAPABILITIES.grant, (p, i) => resolver.grant(p, i as never)), 'Grants actions on references to a principal.'),
@@ -133,16 +133,25 @@ export function createResolverApplication(resolver: Resolver, services: AppPortS
     capability(CAPABILITIES.createKey, 'consequential', object({ name: str, expiresAt: str }, ['name']), call(CAPABILITIES.createKey, (p, i) => resolver.createKey(p, i as never)), 'Issues an API key (the secret is returned once).'),
     capability(CAPABILITIES.revokeKey, 'consequential', object({ id: str }, ['id']), call(CAPABILITIES.revokeKey, (p, i) => resolver.revokeKey(p, i as never)), 'Revokes an API key.'),
     capability(CAPABILITIES.listKeys, 'observation', object(), call(CAPABILITIES.listKeys, (p) => resolver.listKeys(p)), 'API keys in the caller\'s tenant.'),
+    capability(CAPABILITIES.register, 'consequential', object({ application: str, environment: str, instance: str, dependencies: { type: 'array', items: object({ ref: str, contract: str }, ['ref']) } }, ['application', 'environment']), call(CAPABILITIES.register, (p, i) => resolver.register(p, i as never)), 'Registers a running consumer and the references it declares it depends on.'),
+    capability(CAPABILITIES.updateRegistration, 'consequential', object({ registration: str, dependencies: { type: 'array', items: object({ ref: str, contract: str }, ['ref']) } }, ['registration']), call(CAPABILITIES.updateRegistration, (p, i) => resolver.updateRegistration(p, i as never)), 'Replaces a registration\'s declared dependencies.'),
+    capability(CAPABILITIES.deregister, 'consequential', object({ registration: str }, ['registration']), call(CAPABILITIES.deregister, (p, i) => resolver.deregister(p, i as never)), 'Ends a registration (kept for history).'),
+    capability(CAPABILITIES.report, 'consequential', object({ ref: str, revision: int, outcome: str, label: str, consumer: str }, ['ref', 'revision', 'outcome']), call(CAPABILITIES.report, (p, i) => resolver.report(p, i as never)), 'Reports using a resolved target (asserted by the consumer).'),
+    capability(CAPABILITIES.consumers, 'observation', object({ ref: str }, ['ref']), call(CAPABILITIES.consumers, (p, i) => resolver.consumers(p, i as never)), 'Consumers of a reference: declared, registered, resolved (observed), used (reported), kept apart.'),
+    capability(CAPABILITIES.adoption, 'observation', object({ ref: str, revision: int }, ['ref']), call(CAPABILITIES.adoption, (p, i) => resolver.adoption(p, i as never)), 'Adoption of a revision: authorized, committed, available, fetched, adopted, functionally verified.'),
+    capability(CAPABILITIES.policies, 'observation', object(), call(CAPABILITIES.policies, (p) => resolver.policies(p)), 'Mutation policies (changed by the host operator only).'),
+    capability(CAPABILITIES.signingKeys, 'observation', object(), call(CAPABILITIES.signingKeys, (p) => resolver.signingKeys(p)), 'Change-authorization signing keys and their state (changed by the host operator only).'),
+    capability(CAPABILITIES.governanceEvents, 'observation', object({ limit: int }), call(CAPABILITIES.governanceEvents, (p, i) => resolver.governanceEvents(p, i as never)), 'Break-glass writes and policy and signing-key changes, newest first.'),
     defineStreamCapability({
       name: CAPABILITIES.watch,
       version: 1,
       description: 'Streams change notifications for references the caller may read; heartbeats keep the stream alive.',
       effect: 'observation',
       authorization: [PERMISSION],
-      input: object({ refs: { type: 'array', items: str }, prefix: str }),
+      input: object({ refs: { type: 'array', items: str }, prefix: str, consumer: str }),
       output: any,
       timeoutMs: 24 * 3600_000,
-      handler: async (input: { refs?: string[]; prefix?: string }, context: { session?: { id: string }; signal: AbortSignal }) => {
+      handler: async (input: { refs?: string[]; prefix?: string; consumer?: string }, context: { session?: { id: string }; signal: AbortSignal }) => {
         const principal = await authenticated(context.session?.id);
         return whileLive(withHeartbeat(resolver.watch(principal, input, context.signal), context.signal), () => live(principal));
       },
