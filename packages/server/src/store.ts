@@ -56,6 +56,7 @@ export const COLLECTIONS = {
 } as const;
 
 const SEQUENCE_ID = 'sequence';
+export const LOOKUP_INDEX = 'resolver_references_lookup';
 const COMMIT_ATTEMPTS = 16;
 
 export interface ReferenceRecord {
@@ -72,6 +73,9 @@ export interface ReferenceRecord {
   createdAt: string;
   updatedAt: string;
   updatedBy: string;
+  /** The reference's exact lookup entry (`PutInput.lookup`), fixed at creation. */
+  lookupKey?: string;
+  lookupValue?: string;
   __version?: number;
 }
 
@@ -265,6 +269,10 @@ export class ResolverStore {
     this.#meta = db.collection<{ id: string; seq: number; __version?: number }>(COLLECTIONS.meta);
     this.#sessions = db.collection<SessionRecord>(COLLECTIONS.sessions);
     this.#references = db.collection<ReferenceRecord>(COLLECTIONS.references);
+    // Exact lookups (resolver.lookup) by tenant, key and value use this index, not a scan.
+    if (!this.#references.listIndexes().some((index) => index.name === LOOKUP_INDEX)) {
+      this.#references.createIndex({ name: LOOKUP_INDEX, type: 'compound', fields: ['tenantId', 'lookupKey', 'lookupValue'] });
+    }
     this.#revisions = db.collection<RevisionRecord>(COLLECTIONS.revisions);
     this.#grants = db.collection<GrantRecord>(COLLECTIONS.grants);
     this.#reveals = db.collection<RevealRecord>(COLLECTIONS.reveals);
@@ -283,6 +291,16 @@ export class ResolverStore {
   async history(tenantId: string, ref: string): Promise<RevisionRecord[]> {
     const rows = await this.#revisions.find({ referenceId: referenceId(tenantId, ref) });
     return rows.filter((r) => r.tenantId === tenantId).sort((a, b) => a.revision - b.revision);
+  }
+
+  /** References with exactly this lookup key and value, in one tenant (indexed). */
+  async lookup(tenantId: string, key: string, value: string): Promise<ReferenceRecord[]> {
+    return this.#references.find({ tenantId, lookupKey: key, lookupValue: value });
+  }
+
+  /** Index use for an exact lookup, for tests and diagnostics. */
+  lookupIndexed(): boolean {
+    return this.#references.listIndexes().some((index) => index.name === LOOKUP_INDEX);
   }
 
   async references(tenantId: string): Promise<ReferenceRecord[]> {

@@ -15,6 +15,7 @@ export const CAPABILITIES = {
   rollback: 'resolver.rollback',
   revoke: 'resolver.revoke',
   list: 'resolver.list',
+  lookup: 'resolver.lookup',
   watch: 'resolver.watch',
   grant: 'resolver.grant',
   ungrant: 'resolver.ungrant',
@@ -92,6 +93,17 @@ export interface PutInput {
   /** Seconds a client may cache resolutions (default 30, 0 to 86400). */
   ttlSeconds?: number;
   /**
+   * At creation only: an exact lookup entry for this reference, found later with `resolver.lookup`
+   * by the same key and value (an external identity for an account link, a domain for a tenant…).
+   * It is part of the reference for its whole life: an update may repeat it, never change it.
+   */
+  lookup?: LookupEntry;
+}
+
+/** `key`: what kind of thing `value` is, within the caller's tenant (e.g. `identity:multiplayer:prod`). */
+export interface LookupEntry {
+  key: string;
+  value: string;
    * A change authorization (compact JWS, Ed25519) from an issuer the reference's mutation policy trusts. Required
    * when a policy governs this reference and operation; consumed by the write that it admits.
    */
@@ -99,6 +111,15 @@ export interface PutInput {
   /** Host operator only: write under a mutation policy without an authorization. Recorded as a governance event. */
   breakGlass?: { reason: string };
 }
+
+/** Exact lookup: the references with this key and value that the caller may read. */
+export interface LookupInput extends LookupEntry {
+  /** Include revoked references (default false: a revoked reference does not answer a lookup). */
+  includeRevoked?: boolean;
+}
+
+export const LOOKUP_KEY = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
+export const MAX_LOOKUP_VALUE = 512;
 
 export interface WriteResult {
   ref: RefName;
