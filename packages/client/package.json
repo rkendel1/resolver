@@ -1,6 +1,6 @@
 {
   "name": "@appport/resolver-client",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Resolve references at run time with live updates, caching, last-known-good fallback and traffic steering.",
   "type": "module",
   "main": "./dist/index.js",
@@ -9,13 +9,17 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./authorization": {
+      "types": "./dist/authorization.d.ts",
+      "import": "./dist/authorization.js"
     }
   },
   "files": [
     "dist"
   ],
   "dependencies": {
-    "@appport/resolver-core": "0.1.1",
+    "@appport/resolver-core": "0.2.0",
     "@appport/sdk": "^1.7.0"
   },
   "repository": {

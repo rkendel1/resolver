@@ -17,6 +17,7 @@ import { GrantAuthorizer, OPERATOR_TYPE } from './authorizer.js';
 import { verifyIntegrity, type IntegrityReport } from './integrity.js';
 import { createLogger, silentLogger, type Logger } from './log.js';
 import { createOutboundPolicy, type Environment, type OutboundOptions, type OutboundPolicy } from './outbound.js';
+import { ObservationRecorder } from './observe.js';
 import { Resolver } from './resolver.js';
 import { ResolverStore } from './store.js';
 import { RevisionSync, type SyncOptions } from './sync.js';
@@ -54,6 +55,12 @@ export interface ResolverRuntimeOptions {
   verifierKey?: string;
   targets?: Omit<TargetCheckOptions, 'lookup' | 'outbound'>;
   sync?: SyncOptions;
+  /** Record observed resolutions and reported usage (default true). Never blocks or fails a resolution. */
+  observeResolutions?: boolean;
+  /** How long increments of one observation are held before they are added to its row. Default 60 000 ms. */
+  observationWindowMs?: number;
+  /** A consumer registration is live while its watch stream was seen within this. Default 120 000 ms. */
+  consumerGraceMs?: number;
   /**
    * The management UI and its JSON API, on the same server. Default on; `false` serves only the AppPort API.
    * `authenticate` is the host's identity adapter (an SSO proxy, an embedding application).
@@ -98,6 +105,8 @@ export interface ResolverRuntime {
   instanceId: string;
   /** A principal with every permission in `tenantId`, for bootstrap and embedding. Never leaves this process. */
   operator(tenantId: string): VerifiedPrincipal;
+  /** Observed resolutions and reported usage (absent when `observeResolutions` is false). */
+  observations: ObservationRecorder | undefined;
   readiness(): Promise<ReadinessReport>;
   /** Checks every secret revision against the custody (no material leaves the process). */
   integrity(): Promise<IntegrityReport>;
@@ -170,6 +179,7 @@ export async function createResolverRuntime(options: ResolverRuntimeOptions): Pr
     // AppPort Services reads the API-key verifier key as `apiKeyVerifierKey`.
     ...(options.verifierKey ? { apiKeyVerifierKey: options.verifierKey } : {}),
   });
+  const observations = options.observeResolutions === false ? undefined : new ObservationRecorder({ store, log, ...(options.observationWindowMs !== undefined ? { windowMs: options.observationWindowMs } : {}), ...(options.now ? { now: options.now } : {}) });
   const resolver = new Resolver({
     store,
     authorizer,
@@ -177,6 +187,8 @@ export async function createResolverRuntime(options: ResolverRuntimeOptions): Pr
     services,
     targets: { ...(options.targets ?? {}), outbound },
     ...(options.now ? { now: options.now } : {}),
+    ...(observations ? { observations } : {}),
+    ...(options.consumerGraceMs !== undefined ? { consumerGraceMs: options.consumerGraceMs } : {}),
   });
   const sync = new RevisionSync(store, db, resolver, log, options.sync);
   resolver.onCommitted(() => void sync.pass());
@@ -258,6 +270,7 @@ export async function createResolverRuntime(options: ResolverRuntimeOptions): Pr
     custody,
     log,
     instanceId,
+    observations,
     operator(tenantId: string) {
       const principal = services.identify({ principalId: 'operator', principalType: OPERATOR_TYPE, tenantId });
       if (!principal) throw new Error('could not mint the operator principal');
@@ -278,6 +291,8 @@ export async function createResolverRuntime(options: ResolverRuntimeOptions): Pr
       return server;
     },
     async close() {
+      // Held observations are written before the state closes: a clean shutdown loses none.
+      await observations?.close();
       await sync.stop();
       for (const server of running.splice(0)) await server.close();
       if (owned) await Promise.resolve(db.close());

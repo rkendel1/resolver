@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.4.0 / client 0.3.0 / core 0.2.0
+
+_Prepared, not published._
+
+### Enforced mutation authority
+
+- **Mutation policies.** Per tenant and pattern, a policy requires a change authorization for `put`,
+  `put-secret`, `rollback` and `revoke`. The governing policy is the most specific matching one that lists the
+  operation. Without a policy, behaviour is unchanged.
+- **Change authorizations.** A compact JWS, Ed25519, verified locally against registered signing keys (`active`,
+  `retired`, `revoked`). It is bound to tenant, reference, operation, expected revision and the digest of the
+  canonical request (`canonicalChange` in core; never secret material). It is consumed by a `requireAbsent` row in
+  the revision's own transaction. New reasons: `resolver.authorization-required`, `resolver.authorization-invalid`,
+  `resolver.authorization-consumed`, `resolver.break-glass-refused`.
+- **Break-glass.** The operator no longer bypasses a policy. `breakGlass: { reason }` (operator only, governed
+  references only) is recorded on the revision, as a governance event in the same transaction, and on change events.
+- **Trust roots.** Policies and signing keys are changed by the host operator only (`resolver policy …`,
+  `resolver signing-key …`), with a reason, each committed with a governance event. Admin reads:
+  `resolver.policies.list`, `resolver.signingkeys.list`, `resolver.governance.events`.
+- **Evidence.** History entries and change events carry `governance`.
+- **Issuers.** `@appport/resolver-client/authorization` provides `signChangeAuthorization` and `generateSigningKey`.
+
+### Resolution observability
+
+- **Resolutions recorded by default**, aggregated per principal, registration, reference, revision and outcome,
+  coalesced per instance. Recording never blocks a resolution.
+- **Consumer registration** (`resolver.consumers.register|update|deregister`), live while the watch stream is open.
+  Usage reports (`resolver.consumers.report`) are kept apart, as asserted facts.
+- **`resolver.consumers.list`** keeps the five facts apart. **`resolver.adoption`** reports a revision's lifecycle.
+- **Client:** a `consumer` option, `report`, `consumers`, `adoption`. `rollback` and `revoke` take
+  `{ authorization }`.
+
+### Packaging
+
+- The server links the workspace client (it pinned the published 0.2.3).
+- Backups include the new collections.
+
+
 ## 0.3.3 / client 0.2.4 / core 0.1.1
 
 _Prepared; publish with Actions → Publish packages (needs the `NPM_TOKEN` repository secret)._
