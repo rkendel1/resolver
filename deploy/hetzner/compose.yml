@@ -1,0 +1,18 @@
+# Shared Resolver on the Hetzner host: resolver.boundry.company (Caddy -> 127.0.0.1:21020).
+# State, vault and keys: the vault/verifier keys come from ./env (0600); never change them once set.
+services:
+  resolver:
+    build: .
+    image: kendel/resolver:0.4.0
+    container_name: resolver
+    restart: unless-stopped
+    env_file: ./env
+    ports:
+      - "127.0.0.1:21020:8080"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/_resolver/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5

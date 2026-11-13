@@ -4,3 +4,4 @@ dist/
 coverage/
 .resolver/
 .env*
+deploy/fly/.keys.local
