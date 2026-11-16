@@ -122,6 +122,27 @@ npx resolver set ref://prod/chat/model --kind model \
 npx resolver keys create chat-app --grant read:ref://prod/chat/* --grant read,reveal:ref://prod/llm/*
 ```
 
+There is no hosted Resolver: `RESOLVER_URL` is wherever you run `resolver serve`. `resolver init` opens the
+state directly, so run it with the server stopped (the state is locked while `serve` runs). A global install
+(`npm i -g @appport/resolver`) puts `resolver` on the PATH as a symlink; it runs the same as `npx resolver`.
+
+#### In a container (Docker, Fly)
+
+```dockerfile
+FROM node:22-slim
+RUN npm install -g @appport/resolver
+ENV RESOLVER_DIR=/data
+VOLUME /data
+EXPOSE 4300
+CMD ["resolver", "serve", "--dir", "/data", "--host", "0.0.0.0", "--port", "4300"]
+```
+
+Initialise once, before the first `serve`, on the same volume: `docker run --rm -v resolver-data:/data <image>
+resolver init --dir /data --tenant <tenant>` (it prints the first admin key once). On Fly, mount a volume at
+`/data` (one machine: a local state directory belongs to one machine), run `init` from `fly ssh console` with
+the app scaled to zero or before the first deploy, and set `RESOLVER_VAULT_KEY` and `RESOLVER_VERIFIER_KEY`
+as secrets. For several machines, use a FeltDB server for state (`RESOLVER_FELTDB_URL`, `RESOLVER_FELTDB_TOKEN`).
+
 The `.resolver` directory holds `vault.key` and `verifier.key` (mode 0600). In production, supply them as
 `RESOLVER_VAULT_KEY` and `RESOLVER_VERIFIER_KEY` from your secret manager, and use a FeltDB server for state
 (`RESOLVER_FELTDB_URL`, `RESOLVER_FELTDB_TOKEN`).

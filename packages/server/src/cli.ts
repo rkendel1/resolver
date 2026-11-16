@@ -46,9 +46,9 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ResolverClient } from '@appport/resolver-client';
 import { createBackup, restoreBackup } from './backup.js';
 import { createLogger, silentLogger, type LogLevel } from './log.js';
@@ -361,7 +361,22 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+/**
+ * Whether this module is the process's entry point. npm installs the bin as a symlink
+ * (/usr/local/bin/resolver → …/dist/cli.js) and Node resolves the module's own URL through it, so
+ * argv[1] is compared by its real path; comparing the raw paths made a global install exit 0 silently.
+ */
+function isEntryPoint(): boolean {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  try {
+    return realpathSync(invoked) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return import.meta.url === pathToFileURL(invoked).href;
+  }
+}
+
+if (isEntryPoint()) {
   const stop = new Promise<void>((resolve) => {
     process.once('SIGINT', () => resolve());
     process.once('SIGTERM', () => resolve());
