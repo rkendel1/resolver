@@ -2,8 +2,8 @@
 # State, vault and keys: the vault/verifier keys come from ./env (0600); never change them once set.
 services:
   resolver:
-    build: .
-    image: kendel/resolver:0.4.0
+    # The image tag comes from ./.env (RESOLVER_IMAGE), written by `npm run deploy:hetzner` from this repository.
+    image: ${RESOLVER_IMAGE:?set the immutable Resolver image tag}
     container_name: resolver
     restart: unless-stopped
     env_file: ./env

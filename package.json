@@ -17,7 +17,8 @@
     "test": "vitest run",
     "clean": "tsc -b tsconfig.build.json --clean",
     "test:browser": "vitest run --config vitest.browser.config.ts",
-    "publish:packages": "node --env-file-if-exists=.env.local scripts/publish-packages.mjs"
+    "publish:packages": "node --env-file-if-exists=.env.local scripts/publish-packages.mjs",
+    "deploy:hetzner": "npx --yes @appport/hetzner-deploy@0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

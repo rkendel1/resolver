@@ -1,0 +1,17 @@
+{
+  "host": "root@95.217.199.123",
+  "services": {
+    "resolver": {
+      "image": "boundry-resolver",
+      "imageVar": "RESOLVER_IMAGE",
+      "dir": "/opt/resolver",
+      "compose": "compose.yml",
+      "version": "packages/server/package.json",
+      "context": "deploy/hetzner",
+      "dockerfile": "Dockerfile",
+      "buildArgs": { "RESOLVER_VERSION": "{version}" },
+      "check": ["node", "-e", "require('/usr/local/lib/node_modules/@appport/resolver/package.json')"],
+      "health": "https://resolver.boundry.company/_resolver/ready"
+    }
+  }
+}
