@@ -26,6 +26,10 @@ import { createVault, requireVersionedCustody, type Vault, type VersionedCustody
 import { createManagementHandler, type ManagementOptions } from './ui/router.js';
 
 export interface ResolverRuntimeOptions {
+  /** How long an authenticated connection's session lasts without use (default 2 minutes). Tests shorten it. */
+  sessionTtlMs?: number;
+  /** How often an open watch stream sends a heartbeat (default 15 s); each one keeps its connection's session. */
+  heartbeatMs?: number;
   /**
    * Where state lives. `{ local: dir }` (FeltDB file runtime; `shared: true` lets several processes on one
    * host open it), `{ memory: true }` (tests), `{ remote: { url, token } }` (a FeltDB server: the state for
@@ -193,7 +197,7 @@ export async function createResolverRuntime(options: ResolverRuntimeOptions): Pr
   const sync = new RevisionSync(store, db, resolver, log, options.sync);
   resolver.onCommitted(() => void sync.pass());
   await sync.start();
-  const app = createResolverApplication(resolver, services, { ui: options.management !== false, log });
+  const app = createResolverApplication(resolver, services, { ui: options.management !== false, log, ...(options.sessionTtlMs ? { sessionTtlMs: options.sessionTtlMs } : {}), ...(options.heartbeatMs ? { heartbeatMs: options.heartbeatMs } : {}) });
   const management = options.management === false ? undefined : createManagementHandler({ resolver, services, store, log, ...options.management });
   const running: Array<{ close(): Promise<void> }> = [];
   const integrity = () => verifyIntegrity(store, custody!, vault);

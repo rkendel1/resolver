@@ -1,5 +1,19 @@
 # Changelog
 
+## server 0.4.3 / client 0.3.2
+
+_Prepared, not published._
+
+- **A long-lived connection no longer loses its authentication.** A WebSocket connection authenticates once, and the
+  server kept its session for two minutes after the last call. A client quiet for longer (an agent between turns)
+  kept its connection but failed every later call with `UNAUTHORIZED: an API key is required`, and the client, which
+  treats UNAUTHORIZED as authoritative, never recovered until restarted.
+  - Server: an open watch stream keeps its connection's session (every heartbeat refreshes it), and a lapsed session
+    is answered `UNAUTHORIZED` with reason `resolver.session-expired`, not as a missing key.
+  - Client: on `resolver.session-expired` it reconnects once, which authenticates again with its key, and retries the
+    call (refused before it ran, so the retry is safe). A revoked key is still refused.
+  - `sessionTtlMs` and `heartbeatMs` runtime options (for tests).
+
 ## client 0.3.1
 
 _Prepared, not published._
