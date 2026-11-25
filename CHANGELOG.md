@@ -1,5 +1,14 @@
 # Changelog
 
+## client 0.3.1
+
+_Prepared, not published._
+
+- **`live` now holds for a client constructed with `new`.** `new ResolverClient({ live: true })` (the default)
+  never subscribed to change notifications: only `ResolverClient.connect()` and `watch()` started the stream, so
+  such a client served a changed reference from its cache until the reference's TTL passed. The first resolution now
+  starts the subscription, as the option and `connect()` documented.
+
 ## 0.4.0 / client 0.3.0 / core 0.2.0
 
 _Prepared, not published._
