@@ -58,9 +58,9 @@ describe('@appport/resolver-client depends on the AppPort 1.7 release line', () 
     expect(packageDir(sdkDir, '@appport/protocol')).toBe(fromClient);
     expect(packageDir(serverDir, '@appport/protocol')).toBe(fromClient);
     expect(packageDir(packageDir(sdkDir, '@appport/core'), '@appport/protocol')).toBe(fromClient);
-    expect(manifest(fromClient).version).toBe('1.5.0');
+    expect(manifest(fromClient).version).toBe('1.8.0');
     // Protocol identity across the boundary: the module the client resolves and the one the SDK resolves are one instance,
-    // so a feedback receipt digested by one validates under the other (appport.feedback/1, protocol 1.5.0).
+    // so a feedback receipt digested by one validates under the other (appport.feedback/1, protocol 1.8.0).
     const protocol = (await import(/* @vite-ignore */ pathToFileURL(join(fromClient, manifest(fromClient).exports?.['.']?.import ?? 'dist/index.js')).href)) as { FEEDBACK_PROTOCOL: string; validateFeedbackReport: (r: unknown) => { ok: boolean } };
     const viaSdk = (await import(/* @vite-ignore */ pathToFileURL(join(packageDir(sdkDir, '@appport/protocol'), manifest(fromClient).exports?.['.']?.import ?? 'dist/index.js')).href)) as typeof protocol;
     expect(protocol.FEEDBACK_PROTOCOL).toBe('appport.feedback/1');

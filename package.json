@@ -26,8 +26,5 @@
     "playwright-core": "^1.63.0",
     "typescript": "^5.7.2",
     "vitest": "^3.2.6"
-  },
-  "overrides": {
-    "@feltdb/core": "0.18.0"
   }
 }
