@@ -1,5 +1,6 @@
 // The point of the resolver: running consumers follow changes without a redeploy or restart.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ResolverClient } from '@appport/resolver-client';
 import { startResolver, waitFor, type Harness } from './harness.js';
 
 let h: Harness;
@@ -53,6 +54,26 @@ describe('changing a model under a running application ("DNS for models")', () =
     const pinned = await client.resolve('ref://prod/chat/model', { revision: 1 });
     expect(pinned.selected.value).toMatchObject({ provider: 'openai', model: 'gpt-4o' });
     expect(pinned.currentRevision).toBeGreaterThan(1);
+  });
+});
+
+describe('a client constructed directly', () => {
+  it('subscribes on its first resolution, so a change arrives before the TTL passes', async () => {
+    await h.admin.put({ ref: 'ref://prod/direct/profile', kind: 'value', binding: { value: { name: 'engineer' } }, ttlSeconds: 3600, expectedRevision: 0 });
+    const key = await h.admin.createKey('direct');
+    await h.admin.grant(key.principal, ['read'], 'ref://prod/direct/*');
+    const app = new ResolverClient({ url: h.url, apiKey: key.secret });
+    try {
+      expect((await app.resolve('ref://prod/direct/profile')).revision).toBe(1);
+      await h.admin.put({ ref: 'ref://prod/direct/profile', binding: { value: { name: 'reviewer' } }, expectedRevision: 1 });
+      const after = await waitFor(async () => {
+        const r = await app.resolve('ref://prod/direct/profile');
+        return r.revision === 2 ? r : undefined;
+      });
+      expect(after.selected.value).toEqual({ name: 'reviewer' });
+    } finally {
+      await app.close();
+    }
   });
 });
 

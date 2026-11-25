@@ -136,7 +136,7 @@ export class ResolverClient {
     this.#options = { live: true, maxStaleSeconds: 300, timeoutMs: 5000, ...options };
   }
 
-  /** Connects (and starts the live subscription). Optional: the first request connects on its own. */
+  /** Connects (and starts the live subscription). Optional: the first resolution connects and subscribes on its own. */
   static async connect(options: ResolverClientOptions): Promise<ResolverClient> {
     const client = new ResolverClient(options);
     await client.#connection();
@@ -331,6 +331,7 @@ export class ResolverClient {
   // ---- internals --------------------------------------------------------------------------------
 
   async #current(ref: string, revision?: number): Promise<ResolveResult> {
+    if (this.#options.live) this.#startWatch();
     const key = cacheKey(ref, revision);
     const hit = this.#cache.get(key);
     const age = hit ? Date.now() - hit.fetchedAt : Infinity;
