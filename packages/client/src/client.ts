@@ -423,11 +423,20 @@ export class ResolverClient {
     return this.#connecting;
   }
 
-  async #call<T>(name: string, input: unknown): Promise<T> {
+  async #call<T>(name: string, input: unknown, reauthenticated = false): Promise<T> {
     try {
       const client = await this.#connection();
       return await within(client.call<T>(name, input, { timeoutMs: this.#options.timeoutMs }), this.#options.timeoutMs, name);
     } catch (error) {
+      // The connection's session lapsed on the resolver (idle past its TTL): the call was refused before it ran, so
+      // reconnecting (which authenticates again with the key) and retrying once is safe. A revoked or wrong key is
+      // still refused, on the fresh connection.
+      if (!reauthenticated && toError(error).reason === 'resolver.session-expired') {
+        const stale = this.#client;
+        this.#client = undefined;
+        await stale?.close().catch(() => undefined);
+        return this.#call<T>(name, input, true);
+      }
       const failure = toError(error);
       if (!AUTHORITATIVE.has(failure.code)) {
         // Drop the connection so the next call rediscovers (the resolver may have moved or restarted).

@@ -37,10 +37,11 @@ const int = { type: 'integer' };
 class Sessions {
   readonly #byId = new Map<string, { principal: VerifiedPrincipal; expires: number }>();
   #sweptAt = Date.now();
+  constructor(readonly ttlMs: number = SESSION_TTL_MS) {}
   add(principal: VerifiedPrincipal): string {
     const id = `ses_${randomUUID().replaceAll('-', '')}`;
     const now = Date.now();
-    this.#byId.set(id, { principal, expires: now + SESSION_TTL_MS });
+    this.#byId.set(id, { principal, expires: now + this.ttlMs });
     if (now - this.#sweptAt > SWEEP_EVERY_MS) {
       this.#sweptAt = now;
       for (const [key, entry] of this.#byId) if (entry.expires < now) this.#byId.delete(key);
@@ -49,10 +50,18 @@ class Sessions {
   }
   /** Sliding expiry: a WebSocket session stays known while it is used. */
   get(id: string | undefined): VerifiedPrincipal {
-    const entry = id ? this.#byId.get(id) : undefined;
-    if (!entry || entry.expires < Date.now()) throw new AppPortError('UNAUTHORIZED', 'an API key is required');
-    entry.expires = Date.now() + SESSION_TTL_MS;
+    if (!id) throw new AppPortError('UNAUTHORIZED', 'an API key is required');
+    const entry = this.#byId.get(id);
+    // The connection authenticated, but its session lapsed (idle past the TTL): say so, so the client re-authenticates
+    // by reconnecting instead of failing every call on a connection that will never be authorized again.
+    if (!entry || entry.expires < Date.now()) throw new AppPortError('UNAUTHORIZED', 'this connection\'s session has lapsed; reconnect to authenticate again', { details: { reason: 'resolver.session-expired' } as never });
+    entry.expires = Date.now() + this.ttlMs;
     return entry.principal;
+  }
+  /** A connection in use keeps its session: an open watch stream refreshes it on every heartbeat. */
+  touch(id: string | undefined) {
+    const entry = id ? this.#byId.get(id) : undefined;
+    if (entry && entry.expires >= Date.now()) entry.expires = Date.now() + this.ttlMs;
   }
   drop(id: string | undefined) {
     if (id) this.#byId.delete(id);
@@ -74,8 +83,9 @@ export interface ResolverApplication {
   server: AppPortServer;
 }
 
-export function createResolverApplication(resolver: Resolver, services: AppPortServices, options: { ui?: boolean; log?: Logger } = {}): ResolverApplication {
-  const sessions = new Sessions();
+export function createResolverApplication(resolver: Resolver, services: AppPortServices, options: { ui?: boolean; log?: Logger; sessionTtlMs?: number; heartbeatMs?: number } = {}): ResolverApplication {
+  const sessions = new Sessions(options.sessionTtlMs);
+  const heartbeatMs = options.heartbeatMs ?? HEARTBEAT_MS;
   const log = options.log ?? silentLogger();
   /**
    * A WebSocket connection authenticates once; the key may be revoked or expire while it stays open.
@@ -153,7 +163,7 @@ export function createResolverApplication(resolver: Resolver, services: AppPortS
       timeoutMs: 24 * 3600_000,
       handler: async (input: { refs?: string[]; prefix?: string; consumer?: string }, context: { session?: { id: string }; signal: AbortSignal }) => {
         const principal = await authenticated(context.session?.id);
-        return whileLive(withHeartbeat(resolver.watch(principal, input, context.signal), context.signal), () => live(principal));
+        return whileLive(withHeartbeat(resolver.watch(principal, input, context.signal), context.signal, heartbeatMs, () => sessions.touch(context.session?.id)), () => live(principal));
       },
     } as never),
   ];
@@ -196,7 +206,7 @@ async function* whileLive<T>(source: AsyncGenerator<T>, isLive: () => Promise<bo
   }
 }
 
-async function* withHeartbeat<T>(source: AsyncGenerator<T>, signal: AbortSignal): AsyncGenerator<T | { heartbeat: string }> {
+async function* withHeartbeat<T>(source: AsyncGenerator<T>, signal: AbortSignal, heartbeatMs: number, onBeat: () => void): AsyncGenerator<T | { heartbeat: string }> {
   const iterator = source[Symbol.asyncIterator]();
   // Starting the source subscribes it; the first heartbeat tells the client that changes from now on reach it.
   let pending = iterator.next();
@@ -204,10 +214,11 @@ async function* withHeartbeat<T>(source: AsyncGenerator<T>, signal: AbortSignal)
     yield { heartbeat: new Date().toISOString() };
     while (!signal.aborted) {
       let timer: NodeJS.Timeout | undefined;
-      const tick = new Promise<'tick'>((resolve) => (timer = setTimeout(() => resolve('tick'), HEARTBEAT_MS)));
+      const tick = new Promise<'tick'>((resolve) => (timer = setTimeout(() => resolve('tick'), heartbeatMs)));
       const next = await Promise.race([pending, tick]);
       clearTimeout(timer);
       if (next === 'tick') {
+        onBeat();
         yield { heartbeat: new Date().toISOString() };
         continue;
       }
